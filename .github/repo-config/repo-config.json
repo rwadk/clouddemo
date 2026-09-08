@@ -2,28 +2,31 @@
   "_comment": [
     "Exhaustive by policy: every writable field is declared, so nothing is",
     "silently unmanaged. Server-generated fields (id, timestamps, urls,",
-    "counts, pushed_at) are excluded by the projection in project.jq — they",
+    "counts, pushed_at) are excluded by the projection in project.jq \u2014 they",
     "are not settable and would be permanent false drift.",
     "",
     "allow_forking is true because GitHub forces it on public repositories.",
-    "Declaring false would never converge."
+    "Declaring false would never converge.",
+    "",
+    "secret_scanning_non_provider_patterns and secret_scanning_validity_checks",
+    "are declared disabled because they cannot be enabled here. A PATCH to",
+    "enable either returns 200 and changes nothing \u2014 they need GitHub Advanced",
+    "Security, which a personal public repo does not have. Declaring 'enabled'",
+    "would be permanent, unfixable drift."
   ],
-
   "settings": {
     "name": "clouddemo",
-    "description": "Two-environment Azure platform — Terraform, AKS, and a build/promote pipeline.",
+    "description": "Two-environment Azure platform \u2014 Terraform, AKS, and a build/promote pipeline.",
     "homepage": null,
     "private": false,
     "visibility": "public",
     "default_branch": "main",
     "is_template": false,
     "archived": false,
-
     "has_issues": true,
     "has_projects": false,
     "has_wiki": false,
     "has_discussions": false,
-
     "allow_squash_merge": true,
     "allow_merge_commit": false,
     "allow_rebase_merge": false,
@@ -31,23 +34,29 @@
     "allow_update_branch": true,
     "delete_branch_on_merge": true,
     "allow_forking": true,
-
     "squash_merge_commit_title": "PR_TITLE",
     "squash_merge_commit_message": "PR_BODY",
     "merge_commit_title": "MERGE_MESSAGE",
     "merge_commit_message": "PR_TITLE",
-
     "web_commit_signoff_required": false,
-
     "security_and_analysis": {
-      "secret_scanning": { "status": "enabled" },
-      "secret_scanning_push_protection": { "status": "enabled" },
-      "secret_scanning_non_provider_patterns": { "status": "enabled" },
-      "secret_scanning_validity_checks": { "status": "enabled" },
-      "dependabot_security_updates": { "status": "enabled" }
+      "secret_scanning": {
+        "status": "enabled"
+      },
+      "secret_scanning_push_protection": {
+        "status": "enabled"
+      },
+      "secret_scanning_non_provider_patterns": {
+        "status": "disabled"
+      },
+      "secret_scanning_validity_checks": {
+        "status": "disabled"
+      },
+      "dependabot_security_updates": {
+        "status": "enabled"
+      }
     }
   },
-
   "actions_permissions": {
     "enabled": true,
     "allowed_actions": "all",
@@ -57,16 +66,13 @@
       "can_approve_pull_request_reviews": false
     }
   },
-
   "variables": {
     "REPO_RECONCILIATOR_APP_ID": "4877182",
     "SSH_EXPOSE_PUBLICLY": "false"
   },
-
   "secrets": [
     "REPO_RECONCILIATOR_APP_KEY"
   ],
-
   "prune_variables": true,
   "prune_secrets": false
 }

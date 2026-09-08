@@ -68,14 +68,25 @@ runs:
         gh api -X PATCH "repos/$REPO" --input "$work/settings.patch.json" > /dev/null
 
         # Re-read and re-diff: proves convergence rather than assuming the
-        # PATCH did what was asked. Some fields silently refuse to change.
-        gh api "repos/$REPO" > "$work/settings.live.json"
-        "${{ github.action_path }}/../repo-config-lib/drift.sh" \
-          settings "$work/settings.input.json" "$work/settings.live.json" \
-          || true
-        if [ "$(cat "${RUNNER_TEMP}/repo-config/settings.diff" | wc -l)" -gt 0 ]; then
-          echo "::error title=Settings did not converge::PATCH accepted but live state still differs"
-          cat "${RUNNER_TEMP}/repo-config/settings.diff"
+        # PATCH did what was asked. Some fields return 200 and change nothing.
+        #
+        # Retried, because the read-back is not immediately consistent —
+        # dependabot_security_updates in particular reports its old value for
+        # a second or so after a successful write.
+        lib="${{ github.action_path }}/../repo-config-lib"
+        for attempt in 1 2 3 4 5; do
+          gh api "repos/$REPO" > "$work/settings.live.json"
+          GITHUB_OUTPUT=/dev/null GITHUB_STEP_SUMMARY=/dev/null \
+            "$lib/drift.sh" settings "$work/settings.input.json" "$work/settings.live.json" \
+            > /dev/null 2>&1 || true
+          [ -s "$work/settings.diff" ] || break
+          echo "not converged yet (attempt $attempt) — retrying"
+          sleep 3
+        done
+
+        if [ -s "$work/settings.diff" ]; then
+          echo "::error title=Settings did not converge::PATCH was accepted but live state still differs after 5 reads — the field is probably not settable on this repo"
+          cat "$work/settings.diff"
           exit 1
         fi
         echo "settings: converged"
