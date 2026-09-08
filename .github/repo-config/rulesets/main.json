@@ -2,7 +2,7 @@
   "_comment": [
     "enforcement is 'disabled' deliberately, not by oversight. Turning it",
     "active makes main PR-only for everyone whose actor is not in",
-    "bypass_actors — and the reconciler App is listed there, but a human",
+    "bypass_actors \u2014 and the reconciler App is listed there, but a human",
     "pushing with their own token is not. Flip to 'active' when you want that.",
     "",
     "No required_status_checks rule yet. The reconcile workflow is path-",
@@ -12,34 +12,50 @@
     "",
     "required_approving_review_count is 0 because this repo has one",
     "maintainer and GitHub forbids self-approval; any higher value blocks",
-    "every merge."
+    "every merge.",
+    "",
+    "require_extra_approval_for_unattributed_changes is false for the same",
+    "reason the review count is zero: it would demand an approval this repo",
+    "has nobody to give. GitHub defaults it to true."
   ],
-
   "name": "protect-main",
   "target": "branch",
   "enforcement": "disabled",
-
   "conditions": {
-    "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] }
+    "ref_name": {
+      "include": [
+        "~DEFAULT_BRANCH"
+      ],
+      "exclude": []
+    }
   },
-
   "bypass_actors": [
-    { "actor_id": 4877182, "actor_type": "Integration", "bypass_mode": "always" }
+    {
+      "actor_id": 4877182,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
   ],
-
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
     {
       "type": "pull_request",
       "parameters": {
-        "allowed_merge_methods": ["squash"],
-        "automatic_copilot_code_review_enabled": false,
+        "allowed_merge_methods": [
+          "squash"
+        ],
         "dismiss_stale_reviews_on_push": true,
         "require_code_owner_review": false,
         "require_last_push_approval": false,
         "required_approving_review_count": 0,
-        "required_review_thread_resolution": false
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": false,
+        "required_reviewers": []
       }
     }
   ]
