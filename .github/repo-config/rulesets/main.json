@@ -1,9 +1,8 @@
 {
   "_comment": [
-    "enforcement is 'disabled' deliberately, not by oversight. Turning it",
-    "active makes main PR-only for everyone whose actor is not in",
-    "bypass_actors \u2014 and the reconciler App is listed there, but a human",
-    "pushing with their own token is not. Flip to 'active' when you want that.",
+    "main is PR-only. bypass_actors holds the reconciler App and nothing else,",
+    "so a human pushing with their own token is rejected like anyone else. The",
+    "App seat exists purely so this workflow can still manage the repo.",
     "",
     "No required_status_checks rule yet. The reconcile workflow is path-",
     "filtered to .github/repo-config/**, so requiring it would deadlock every",
@@ -20,7 +19,7 @@
   ],
   "name": "protect-main",
   "target": "branch",
-  "enforcement": "disabled",
+  "enforcement": "active",
   "conditions": {
     "ref_name": {
       "include": [
