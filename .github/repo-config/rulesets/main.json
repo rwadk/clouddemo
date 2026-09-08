@@ -1,18 +1,20 @@
 {
   "_comment": [
-    "main is PR-only. bypass_actors holds the reconciler App and nothing else,",
-    "so a human pushing with their own token is rejected like anyone else. The",
-    "App seat exists purely so this workflow can still manage the repo.",
+    "No bypass actors, including the reconciler App.",
+    "",
+    "A branch ruleset governs ref operations \u2014 push, force-push, delete, and",
+    "the PR requirement. Everything the reconciler does is repo administration:",
+    "PATCH /repos, actions permissions, environments, variables, rulesets. None",
+    "of that is a ref operation, so none of it is subject to this ruleset. The",
+    "App also holds no Contents permission, so it could not push regardless.",
     "",
     "No required_status_checks rule yet. The reconcile workflow is path-",
     "filtered to .github/repo-config/**, so requiring it would deadlock every",
     "PR that does not touch config: the check would never report. It goes in",
     "once a check that runs on all PRs exists.",
-    "",
     "required_approving_review_count is 0 because this repo has one",
     "maintainer and GitHub forbids self-approval; any higher value blocks",
     "every merge.",
-    "",
     "require_extra_approval_for_unattributed_changes is false for the same",
     "reason the review count is zero: it would demand an approval this repo",
     "has nobody to give. GitHub defaults it to true."
@@ -28,13 +30,7 @@
       "exclude": []
     }
   },
-  "bypass_actors": [
-    {
-      "actor_id": 4877182,
-      "actor_type": "Integration",
-      "bypass_mode": "always"
-    }
-  ],
+  "bypass_actors": [],
   "rules": [
     {
       "type": "deletion"
