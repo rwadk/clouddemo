@@ -60,7 +60,12 @@ runs:
         set -euo pipefail
         work="${RUNNER_TEMP}/repo-config"
         echo "Applying repository settings to $REPO"
-        gh api -X PATCH "repos/$REPO" --input "$work/settings.input.json" > /dev/null
+        # Strip fields that are declarable but not patchable. One of them in
+        # the body 422s the whole request, taking every other field with it.
+        jq --slurpfile w "${{ github.action_path }}/../repo-config-lib/settings-writable.json" \
+          'delpaths([$w[0].never_patch[] | [.]])' \
+          "$work/settings.input.json" > "$work/settings.patch.json"
+        gh api -X PATCH "repos/$REPO" --input "$work/settings.patch.json" > /dev/null
 
         # Re-read and re-diff: proves convergence rather than assuming the
         # PATCH did what was asked. Some fields silently refuse to change.

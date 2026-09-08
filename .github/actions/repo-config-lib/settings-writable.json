@@ -4,17 +4,46 @@
     "surface: repo-config.json must declare all of it, or part of the repo is",
     "quietly unmanaged and drift there goes unnoticed.",
     "",
-    "Not a denylist of server fields — the inverse. Everything absent from",
+    "Not a denylist of server fields \u2014 the inverse. Everything absent from",
     "this list is read-only (ids, urls, counts, pushed_at, license, owner) and",
     "is dropped by projection instead."
   ],
   "writable": [
-    "allow_auto_merge", "allow_forking", "allow_merge_commit",
-    "allow_rebase_merge", "allow_squash_merge", "allow_update_branch",
-    "archived", "default_branch", "delete_branch_on_merge", "description",
-    "has_discussions", "has_issues", "has_projects", "has_wiki", "homepage",
-    "is_template", "merge_commit_message", "merge_commit_title", "name",
-    "private", "security_and_analysis", "squash_merge_commit_message",
-    "squash_merge_commit_title", "visibility", "web_commit_signoff_required"
+    "allow_auto_merge",
+    "allow_forking",
+    "allow_merge_commit",
+    "allow_rebase_merge",
+    "allow_squash_merge",
+    "allow_update_branch",
+    "archived",
+    "default_branch",
+    "delete_branch_on_merge",
+    "description",
+    "has_discussions",
+    "has_issues",
+    "has_projects",
+    "has_wiki",
+    "homepage",
+    "is_template",
+    "merge_commit_message",
+    "merge_commit_title",
+    "name",
+    "private",
+    "security_and_analysis",
+    "squash_merge_commit_message",
+    "squash_merge_commit_title",
+    "visibility",
+    "web_commit_signoff_required"
+  ],
+  "_never_patch_comment": [
+    "Readable, and therefore declarable and drift-checkable, but rejected by",
+    "PATCH /repos in this repo's context. Sending one 422s the ENTIRE request,",
+    "so every other field in the same body silently fails to apply too.",
+    "",
+    "allow_forking: 'Allow forks setting can only be changed on org-owned",
+    "private repositories'. GitHub forces it true on public repos."
+  ],
+  "never_patch": [
+    "allow_forking"
   ]
 }
