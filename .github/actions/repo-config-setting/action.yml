@@ -1,0 +1,64 @@
+name: repo-config-setting
+description: Reconcile repository settings from .github/repo-config/repo-config.json
+
+inputs:
+  token:
+    description: App installation token with Administration:write.
+    required: true
+  repository:
+    description: owner/repo to reconcile.
+    default: ${{ github.repository }}
+  config:
+    description: Path to repo-config.json.
+    default: .github/repo-config/repo-config.json
+  mode:
+    description: plan (detect only) or apply (reconcile).
+    required: true
+
+outputs:
+  drift:
+    description: true when live state diverged from config.
+    value: ${{ steps.plan.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        mkdir -p "$work"
+        jq '.settings' "$CONFIG" > "$work/settings.input.json"
+        gh api "repos/$REPO" > "$work/settings.live.json"
+        "${{ github.action_path }}/../repo-config-lib/drift.sh" \
+          settings "$work/settings.input.json" "$work/settings.live.json"
+
+    - id: apply
+      if: inputs.mode == 'apply' && steps.plan.outputs.drift == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        echo "Applying repository settings to $REPO"
+        gh api -X PATCH "repos/$REPO" --input "$work/settings.input.json" > /dev/null
+
+        # Re-read and re-diff: proves convergence rather than assuming the
+        # PATCH did what was asked. Some fields silently refuse to change.
+        gh api "repos/$REPO" > "$work/settings.live.json"
+        "${{ github.action_path }}/../repo-config-lib/drift.sh" \
+          settings "$work/settings.input.json" "$work/settings.live.json" \
+          || true
+        if [ "$(cat "${RUNNER_TEMP}/repo-config/settings.diff" | wc -l)" -gt 0 ]; then
+          echo "::error title=Settings did not converge::PATCH accepted but live state still differs"
+          cat "${RUNNER_TEMP}/repo-config/settings.diff"
+          exit 1
+        fi
+        echo "settings: converged"

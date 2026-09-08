@@ -1,0 +1,30 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+.terraform.lock.hcl.bak
+
+# Secrets — nothing credential-shaped ever reaches this repo
+*.pem
+*.key
+!**/*.pub
+.env
+.env.*
+kubeconfig
+*.kubeconfig
+
+# OS
+.DS_Store
+Thumbs.db

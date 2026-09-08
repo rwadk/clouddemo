@@ -1,0 +1,92 @@
+name: Repo reconciliation
+
+# Declared repo state lives in .github/repo-config/. This workflow is the only
+# thing that should be changing it.
+#
+#   schedule       plan  — nightly drift detection, FAILS if reality moved
+#   pull_request   plan  — shows what merging would change, never fails
+#   push to main   apply — reconciles
+#   dispatch       either
+
+on:
+  schedule:
+    # 03:17 UTC — off the hour, where GitHub's scheduler is least congested.
+    - cron: '17 3 * * *'
+  pull_request:
+    paths:
+      - '.github/repo-config/**'
+      - '.github/actions/repo-config-*/**'
+      - '.github/workflows/repo-reconcile.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/repo-config/**'
+      - '.github/actions/repo-config-*/**'
+      - '.github/workflows/repo-reconcile.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: plan (detect only) or apply (reconcile)
+        type: choice
+        options: [plan, apply]
+        default: plan
+
+# Never let a nightly run and a merge mutate settings at the same time.
+concurrency:
+  group: repo-config
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: reconcile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GITHUB_TOKEN cannot do any of this: there is no `administration`
+      # scope available to it. Hence the App.
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.REPO_RECONCILIATOR_APP_ID }}
+          private-key: ${{ secrets.REPO_RECONCILIATOR_APP_KEY }}
+
+      - id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            push)              mode=apply; fail=false ;;
+            pull_request)      mode=plan;  fail=false ;;
+            schedule)          mode=plan;  fail=true  ;;
+            workflow_dispatch) mode="${{ inputs.mode }}"
+                               [ "$mode" = plan ] && fail=true || fail=false ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode fail_on_drift=$fail" >> "$GITHUB_STEP_SUMMARY"
+
+      - id: setting
+        uses: ./.github/actions/repo-config-setting
+        continue-on-error: true
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          mode: ${{ steps.mode.outputs.mode }}
+
+      # The paste-back path: download, drop into .github/repo-config/, commit.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-config-live-state
+          path: ${{ runner.temp }}/repo-config/*.actual.json
+          if-no-files-found: warn
+
+      - name: Fail on drift
+        if: steps.mode.outputs.fail == 'true' && steps.setting.outputs.drift == 'true'
+        shell: bash
+        run: |
+          echo "::error title=Repo config drift::live state diverged from .github/repo-config/ — see the diff above"
+          exit 1
