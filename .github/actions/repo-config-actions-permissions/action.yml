@@ -1,0 +1,88 @@
+name: repo-config-actions-permissions
+description: Reconcile Actions permissions from .github/repo-config/repo-config.json
+
+inputs:
+  token:
+    description: App installation token with Administration:write.
+    required: true
+  repository:
+    default: ${{ github.repository }}
+  config:
+    default: .github/repo-config/repo-config.json
+  mode:
+    description: plan or apply.
+    required: true
+
+outputs:
+  drift:
+    value: ${{ steps.plan.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        mkdir -p "$work"
+        jq '.actions_permissions' "$CONFIG" > "$work/actions.input.json"
+
+        # Refuse to disable Actions. It would take this workflow down with it,
+        # leaving no automated way back — the config would have to be fixed by
+        # hand in the UI. Never a legitimate declared state.
+        if [ "$(jq -r '.enabled' "$work/actions.input.json")" != "true" ]; then
+          echo "::error title=Refusing to disable Actions::actions_permissions.enabled must be true — disabling Actions would disable this workflow"
+          exit 1
+        fi
+
+        # Three endpoints, one config object. Assemble live state into the
+        # shape the config declares before diffing.
+        gh api "repos/$REPO/actions/permissions"          > "$work/actions.base.json"
+        gh api "repos/$REPO/actions/permissions/workflow" > "$work/actions.workflow.json"
+        if [ "$(jq -r '.allowed_actions // "all"' "$work/actions.base.json")" = "selected" ]; then
+          gh api "repos/$REPO/actions/permissions/selected-actions" > "$work/actions.selected.json"
+        else
+          echo 'null' > "$work/actions.selected.json"
+        fi
+
+        jq -n \
+          --slurpfile base "$work/actions.base.json" \
+          --slurpfile wf   "$work/actions.workflow.json" \
+          --slurpfile sel  "$work/actions.selected.json" \
+          '$base[0] + { workflow: $wf[0] }
+           + (if $sel[0] == null then {} else { selected_actions: $sel[0] } end)' \
+          > "$work/actions.live.json"
+
+        "${{ github.action_path }}/../repo-config-lib/drift.sh" \
+          actions-permissions "$work/actions.input.json" "$work/actions.live.json"
+
+    - id: apply
+      if: inputs.mode == 'apply' && steps.plan.outputs.drift == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        cfg="$work/actions.input.json"
+
+        jq '{enabled, allowed_actions}' "$cfg" \
+          | gh api -X PUT "repos/$REPO/actions/permissions" --input - > /dev/null
+
+        # Order matters: the allow-list is only accepted once the policy is
+        # actually set to "selected".
+        if [ "$(jq -r '.allowed_actions' "$cfg")" = "selected" ]; then
+          jq '.selected_actions' "$cfg" \
+            | gh api -X PUT "repos/$REPO/actions/permissions/selected-actions" --input - > /dev/null
+        fi
+
+        jq '.workflow' "$cfg" \
+          | gh api -X PUT "repos/$REPO/actions/permissions/workflow" --input - > /dev/null
+
+        echo "actions-permissions: applied"

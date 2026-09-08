@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "Every field PATCH /repos/{owner}/{repo} accepts. This is the managed",
+    "surface: repo-config.json must declare all of it, or part of the repo is",
+    "quietly unmanaged and drift there goes unnoticed.",
+    "",
+    "Not a denylist of server fields — the inverse. Everything absent from",
+    "this list is read-only (ids, urls, counts, pushed_at, license, owner) and",
+    "is dropped by projection instead."
+  ],
+  "writable": [
+    "allow_auto_merge", "allow_forking", "allow_merge_commit",
+    "allow_rebase_merge", "allow_squash_merge", "allow_update_branch",
+    "archived", "default_branch", "delete_branch_on_merge", "description",
+    "has_discussions", "has_issues", "has_projects", "has_wiki", "homepage",
+    "is_template", "merge_commit_message", "merge_commit_title", "name",
+    "private", "security_and_analysis", "squash_merge_commit_message",
+    "squash_merge_commit_title", "visibility", "web_commit_signoff_required"
+  ]
+}

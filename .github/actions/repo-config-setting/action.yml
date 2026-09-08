@@ -34,6 +34,18 @@ runs:
         work="${RUNNER_TEMP}/repo-config"
         mkdir -p "$work"
         jq '.settings' "$CONFIG" > "$work/settings.input.json"
+
+        # Config must cover the whole writable surface. Without this, adding a
+        # field to GitHub's API silently widens the unmanaged area and nothing
+        # ever reports it.
+        undeclared=$(jq -r --slurpfile w "${{ github.action_path }}/../repo-config-lib/settings-writable.json" \
+          '. as $cfg | $w[0].writable[] as $k | select(($cfg | has($k)) | not) | $k' "$work/settings.input.json")
+        if [ -n "$undeclared" ]; then
+          echo "::error title=Settings config is not exhaustive::these writable fields are undeclared"
+          echo "$undeclared" | sed 's/^/  undeclared: /'
+          exit 1
+        fi
+
         gh api "repos/$REPO" > "$work/settings.live.json"
         "${{ github.action_path }}/../repo-config-lib/drift.sh" \
           settings "$work/settings.input.json" "$work/settings.live.json"

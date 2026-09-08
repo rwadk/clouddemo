@@ -76,6 +76,37 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           mode: ${{ steps.mode.outputs.mode }}
 
+      - id: actions-permissions
+        uses: ./.github/actions/repo-config-actions-permissions
+        continue-on-error: true
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          mode: ${{ steps.mode.outputs.mode }}
+
+      - id: variables-secrets
+        uses: ./.github/actions/repo-config-variables-secrets
+        continue-on-error: true
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          mode: ${{ steps.mode.outputs.mode }}
+
+      - id: environments
+        uses: ./.github/actions/repo-config-environments
+        continue-on-error: true
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          mode: ${{ steps.mode.outputs.mode }}
+
+      # Last on purpose: the ruleset is the one resource that can lock the
+      # door on every step above it. Everything else has already converged
+      # by the time it runs.
+      - id: ruleset
+        uses: ./.github/actions/repo-config-ruleset
+        continue-on-error: true
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          mode: ${{ steps.mode.outputs.mode }}
+
       # The paste-back path: download, drop into .github/repo-config/, commit.
       - if: always()
         uses: actions/upload-artifact@v4
@@ -84,9 +115,34 @@ jobs:
           path: ${{ runner.temp }}/repo-config/*.actual.json
           if-no-files-found: warn
 
+      # Every action runs with continue-on-error so one drifted resource does
+      # not hide the other four. Aggregation and the single failure happen here.
+      - name: Report
+        id: report
+        if: always()
+        shell: bash
+        env:
+          DRIFT: ${{ toJSON(steps.*.outputs.drift) }}
+          OUTCOMES: ${{ toJSON(steps.*.outcome) }}
+        run: |
+          set -euo pipefail
+          echo "drift by step: $DRIFT"
+          echo "outcomes:      $OUTCOMES"
+          any=$(echo "$DRIFT" | jq -r 'map(select(. == "true")) | length > 0')
+          failed=$(echo "$OUTCOMES" | jq -r 'map(select(. == "failure")) | length > 0')
+          echo "any_drift=$any"   >> "$GITHUB_OUTPUT"
+          echo "any_failed=$failed" >> "$GITHUB_OUTPUT"
+
       - name: Fail on drift
-        if: steps.mode.outputs.fail == 'true' && steps.setting.outputs.drift == 'true'
+        if: always() && steps.mode.outputs.fail == 'true' && steps.report.outputs.any_drift == 'true'
         shell: bash
         run: |
-          echo "::error title=Repo config drift::live state diverged from .github/repo-config/ — see the diff above"
+          echo "::error title=Repo config drift::live state diverged from .github/repo-config/ — download the artifact and commit it to accept, or re-run in apply mode to reconcile"
+          exit 1
+
+      - name: Fail on action error
+        if: always() && steps.report.outputs.any_failed == 'true'
+        shell: bash
+        run: |
+          echo "::error title=Reconciliation error::a step failed outright — see the logs above"
           exit 1

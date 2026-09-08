@@ -1,0 +1,114 @@
+name: repo-config-variables-secrets
+description: Reconcile repository variables; audit secret names.
+
+# Variables and secrets are deliberately asymmetric.
+#
+# Variable values come back from the API, so they can be fully reconciled.
+# Secret values never do — the API returns names only. So a secret can be
+# audited (does it exist?) but never verified or created. A declared-missing
+# secret is a hard failure a human has to resolve; there is no value to write.
+
+inputs:
+  token:
+    description: App installation token. Variables:write, Secrets:read.
+    required: true
+  repository:
+    default: ${{ github.repository }}
+  config:
+    default: .github/repo-config/repo-config.json
+  mode:
+    required: true
+
+outputs:
+  drift:
+    value: ${{ steps.plan.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        mkdir -p "$work"
+
+        jq '{variables, secrets: (.secrets | sort)}' "$CONFIG" > "$work/varsec.input.json"
+
+        gh api --paginate "repos/$REPO/actions/variables?per_page=100" --jq '.variables[]' \
+          | jq -s 'map({(.name): .value}) | add // {}' > "$work/live.vars.json"
+        gh api --paginate "repos/$REPO/actions/secrets?per_page=100" --jq '.secrets[].name' \
+          | jq -R -s 'split("\n") | map(select(length > 0)) | sort' > "$work/live.secrets.json"
+
+        jq -n --slurpfile v "$work/live.vars.json" --slurpfile s "$work/live.secrets.json" \
+          '{variables: $v[0], secrets: $s[0]}' > "$work/varsec.live.json"
+
+        # Whole-set comparison, not subset — an undeclared variable is drift.
+        RC_PROJECT=false "${{ github.action_path }}/../repo-config-lib/drift.sh" \
+          variables-secrets "$work/varsec.input.json" "$work/varsec.live.json"
+
+    - id: apply
+      if: inputs.mode == 'apply' && steps.plan.outputs.drift == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        prune_secrets=$(jq -r '.prune_secrets // false' "$CONFIG")
+        prune_vars=$(jq -r '.prune_variables // true' "$CONFIG")
+
+        # --- variables: full reconcile -------------------------------------
+        while IFS=$'\t' read -r name value; do
+          [ -z "$name" ] && continue
+          if jq -e --arg n "$name" 'has($n)' "$work/live.vars.json" > /dev/null; then
+            jq -n --arg n "$name" --arg v "$value" '{name:$n, value:$v}' \
+              | gh api -X PATCH "repos/$REPO/actions/variables/$name" --input - > /dev/null
+            echo "variable updated: $name"
+          else
+            jq -n --arg n "$name" --arg v "$value" '{name:$n, value:$v}' \
+              | gh api -X POST "repos/$REPO/actions/variables" --input - > /dev/null
+            echo "variable created: $name"
+          fi
+        done < <(jq -r '.variables | to_entries[] | [.key, .value] | @tsv' "$CONFIG")
+
+        if [ "$prune_vars" = "true" ]; then
+          for name in $(jq -r --slurpfile d "$work/varsec.input.json" \
+                          'keys[] | select(. as $k | ($d[0].variables | has($k)) | not)' \
+                          "$work/live.vars.json"); do
+            gh api -X DELETE "repos/$REPO/actions/variables/$name" > /dev/null
+            echo "variable deleted: $name"
+          done
+        fi
+
+        # --- secrets: audit only -------------------------------------------
+        missing=$(jq -r --slurpfile l "$work/live.secrets.json" \
+                    '.secrets[] | select(. as $s | ($l[0] | index($s)) | not)' "$CONFIG")
+        if [ -n "$missing" ]; then
+          echo "::error title=Declared secrets are missing::the API cannot create a secret without a value — add these by hand"
+          echo "$missing" | sed 's/^/  missing: /'
+          exit 1
+        fi
+
+        extra=$(jq -r --slurpfile d "$work/varsec.input.json" \
+                  '.[] | select(. as $s | ($d[0].secrets | index($s)) | not)' \
+                  "$work/live.secrets.json")
+        if [ -n "$extra" ]; then
+          if [ "$prune_secrets" = "true" ]; then
+            echo "$extra" | while read -r s; do
+              gh api -X DELETE "repos/$REPO/actions/secrets/$s" > /dev/null
+              echo "secret deleted: $s"
+            done
+          else
+            echo "::warning title=Undeclared secrets::present on the repo but not in config; set prune_secrets to remove them"
+            echo "$extra" | sed 's/^/  undeclared: /'
+          fi
+        fi
+
+        echo "variables-secrets: applied"

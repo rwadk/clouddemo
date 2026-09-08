@@ -26,8 +26,18 @@ mkdir -p "$out"
 
 jq -S "$filter" "$desired_f" > "$out/$name.desired.json"
 
-jq --slurpfile desired "$out/$name.desired.json" -f "$lib/project.jq" "$actual_f" \
-  | jq -S "$filter" > "$out/$name.actual.json"
+# RC_PROJECT=false compares the two sides whole.
+#
+# Settings are a SUBSET of a 97-field object, so undeclared keys must be
+# ignored. Variables and secrets are an EXHAUSTIVE collection, so an
+# undeclared one living on the repo is exactly the drift we want to catch.
+# Projecting those would hide it.
+if [ "${RC_PROJECT:-true}" = "true" ]; then
+  jq --slurpfile desired "$out/$name.desired.json" -f "$lib/project.jq" "$actual_f" \
+    | jq -S "$filter" > "$out/$name.actual.json"
+else
+  jq -S "$filter" "$actual_f" > "$out/$name.actual.json"
+fi
 
 if diff -u --label "desired ($name)" --label "actual ($name)" \
      "$out/$name.desired.json" "$out/$name.actual.json" > "$out/$name.diff"; then

@@ -1,0 +1,111 @@
+name: repo-config-ruleset
+description: Reconcile branch rulesets from .github/repo-config/rulesets/*.json
+
+inputs:
+  token:
+    description: App installation token with Administration:write.
+    required: true
+  repository:
+    default: ${{ github.repository }}
+  config-dir:
+    default: .github/repo-config/rulesets
+  mode:
+    required: true
+
+outputs:
+  drift:
+    value: ${{ steps.plan.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        DIR: ${{ inputs.config-dir }}
+        LIB: ${{ github.action_path }}/../repo-config-lib
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        mkdir -p "$work"
+
+        drift=false
+        for f in "$DIR"/*.json; do
+          [ -e "$f" ] || continue
+          rname=$(jq -r '.name' "$f")
+
+          # The list endpoint returns summaries without .rules — the full
+          # object needs a second call by id.
+          rid=$(gh api --paginate "repos/$REPO/rulesets?per_page=100" \
+                  --jq ".[] | select(.name == \"$rname\") | .id" || true)
+
+          if [ -z "$rid" ]; then
+            echo "### ❌ \`ruleset/$rname\` — absent" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            echo "::warning title=Ruleset missing::$rname is declared but does not exist"
+            echo "$rname" >> "$work/rulesets.missing"
+            drift=true
+            continue
+          fi
+
+          echo "$rname $rid" >> "$work/rulesets.present"
+          gh api "repos/$REPO/rulesets/$rid" | jq -f "$LIB/ruleset.jq" > "$work/rs.$rname.live.json"
+          jq -f "$LIB/ruleset.jq" "$f" > "$work/rs.$rname.want.json"
+
+          # GITHUB_OUTPUT is redirected per-ruleset: drift.sh writes its own
+          # drift= line, and several of those in one step file would collide.
+          # The aggregate for the whole step is written once, at the end.
+          # RC_PROJECT=false: ruleset.jq has already removed everything the
+          # server invented, so what remains is exactly the declarable
+          # surface. Comparing it whole means any rule parameter GitHub
+          # returns that is not declared shows up as drift and has to be
+          # written down — which is the point.
+          RC_PROJECT=false GITHUB_OUTPUT=/dev/null "$LIB/drift.sh" \
+            "ruleset-$rname" "$work/rs.$rname.want.json" "$work/rs.$rname.live.json"
+          # `|| true` is load-bearing: under `set -e` a failing test as the
+          # last command in the loop body would abort the step exactly when
+          # there is no drift.
+          [ -s "$work/ruleset-$rname.diff" ] && drift=true || true
+        done
+
+        echo "drift=$drift" >> "$GITHUB_OUTPUT"
+
+    - id: apply
+      if: inputs.mode == 'apply' && steps.plan.outputs.drift == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        DIR: ${{ inputs.config-dir }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+
+        for f in "$DIR"/*.json; do
+          [ -e "$f" ] || continue
+          rname=$(jq -r '.name' "$f")
+          rid=$(gh api --paginate "repos/$REPO/rulesets?per_page=100" \
+                  --jq ".[] | select(.name == \"$rname\") | .id" || true)
+
+          if [ -z "$rid" ]; then
+            jq 'with_entries(select(.key | startswith("_") | not))' "$f" \
+              | gh api -X POST "repos/$REPO/rulesets" --input - > /dev/null
+            echo "ruleset created: $rname"
+          else
+            jq 'with_entries(select(.key | startswith("_") | not))' "$f" \
+              | gh api -X PUT "repos/$REPO/rulesets/$rid" --input - > /dev/null
+            echo "ruleset updated: $rname"
+          fi
+        done
+
+        # Undeclared rulesets are reported, never deleted. Removing branch
+        # protection is not something automation should do unprompted.
+        for name in $(gh api --paginate "repos/$REPO/rulesets?per_page=100" --jq '.[].name'); do
+          if ! ls "$DIR"/*.json >/dev/null 2>&1 || \
+             ! jq -s -e --arg n "$name" 'map(select(.name == $n)) | length > 0' "$DIR"/*.json >/dev/null; then
+            echo "::warning title=Undeclared ruleset::$name exists but is not declared in $DIR"
+          fi
+        done
+
+        echo "rulesets: applied"

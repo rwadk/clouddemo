@@ -1,0 +1,125 @@
+name: repo-config-environments
+description: Reconcile deployment environments, their protection rules and variables.
+
+inputs:
+  token:
+    description: App installation token. Environments:write, Variables:write, Secrets:read.
+    required: true
+  repository:
+    default: ${{ github.repository }}
+  config:
+    default: .github/repo-config/environments.json
+  mode:
+    required: true
+
+outputs:
+  drift:
+    value: ${{ steps.plan.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        CONFIG: ${{ inputs.config }}
+        LIB: ${{ github.action_path }}/../repo-config-lib
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+        mkdir -p "$work"
+
+        jq '{environments: (.environments | sort_by(.name))}' "$CONFIG" > "$work/env.input.json"
+
+        # Each environment needs three calls: the environment itself, its
+        # variables, its secret names. Assemble them into the declared shape.
+        : > "$work/env.parts.jsonl"
+        for name in $(gh api --paginate "repos/$REPO/environments" --jq '.environments[].name'); do
+          gh api "repos/$REPO/environments/$name" | jq -f "$LIB/environment.jq" > "$work/env.one.json"
+          gh api --paginate "repos/$REPO/environments/$name/variables?per_page=100" --jq '.variables[]' \
+            | jq -s 'map({(.name): .value}) | add // {}' > "$work/env.vars.json"
+          gh api --paginate "repos/$REPO/environments/$name/secrets?per_page=100" --jq '.secrets[].name' \
+            | jq -R -s 'split("\n") | map(select(length > 0)) | sort' > "$work/env.secrets.json"
+          jq -c -n --slurpfile e "$work/env.one.json" \
+                   --slurpfile v "$work/env.vars.json" \
+                   --slurpfile s "$work/env.secrets.json" \
+                   '$e[0] + {variables: $v[0], secrets: $s[0]}' >> "$work/env.parts.jsonl"
+        done
+        jq -s '{environments: sort_by(.name)}' "$work/env.parts.jsonl" > "$work/env.live.json"
+
+        # Exhaustive collection: an undeclared environment is drift.
+        RC_PROJECT=false "$LIB/drift.sh" environments "$work/env.input.json" "$work/env.live.json"
+
+    - id: apply
+      if: inputs.mode == 'apply' && steps.plan.outputs.drift == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        work="${RUNNER_TEMP}/repo-config"
+
+        for name in $(jq -r '.environments[].name' "$CONFIG"); do
+          jq --arg n "$name" '.environments[] | select(.name == $n)' "$CONFIG" > "$work/want.json"
+
+          # Config carries reviewer logins; the API only accepts numeric ids.
+          : > "$work/reviewers.jsonl"
+          for login in $(jq -r '(.reviewers // [])[] | .login' "$work/want.json"); do
+            id=$(gh api "users/$login" --jq '.id')
+            jq -c -n --arg id "$id" '{type: "User", id: ($id | tonumber)}' >> "$work/reviewers.jsonl"
+          done
+
+          jq -n --slurpfile w "$work/want.json" \
+                --slurpfile r <(jq -s '.' "$work/reviewers.jsonl") \
+            '{ wait_timer:               ($w[0].wait_timer // 0),
+               prevent_self_review:      ($w[0].prevent_self_review // false),
+               reviewers:                $r[0],
+               deployment_branch_policy: ($w[0].deployment_branch_policy // null) }' \
+            | gh api -X PUT "repos/$REPO/environments/$name" --input - > /dev/null
+          echo "environment reconciled: $name"
+
+          # Environment variables, same create/update/prune as repo level.
+          gh api --paginate "repos/$REPO/environments/$name/variables?per_page=100" --jq '.variables[]' \
+            | jq -s 'map({(.name): .value}) | add // {}' > "$work/env.live.vars.json"
+
+          while IFS=$'\t' read -r k v; do
+            [ -z "$k" ] && continue
+            if jq -e --arg k "$k" 'has($k)' "$work/env.live.vars.json" > /dev/null; then
+              jq -n --arg n "$k" --arg v "$v" '{name:$n, value:$v}' \
+                | gh api -X PATCH "repos/$REPO/environments/$name/variables/$k" --input - > /dev/null
+            else
+              jq -n --arg n "$k" --arg v "$v" '{name:$n, value:$v}' \
+                | gh api -X POST "repos/$REPO/environments/$name/variables" --input - > /dev/null
+            fi
+          done < <(jq -r '(.variables // {}) | to_entries[] | [.key, .value] | @tsv' "$work/want.json")
+
+          for k in $(jq -r --slurpfile w "$work/want.json" \
+                       'keys[] | select(. as $k | (($w[0].variables // {}) | has($k)) | not)' \
+                       "$work/env.live.vars.json"); do
+            gh api -X DELETE "repos/$REPO/environments/$name/variables/$k" > /dev/null
+            echo "  variable deleted: $name/$k"
+          done
+
+          # Secrets: audit only, same as repo level — no value to write.
+          live_secrets=$(gh api --paginate "repos/$REPO/environments/$name/secrets?per_page=100" --jq '.secrets[].name' || true)
+          for s in $(jq -r '(.secrets // [])[]' "$work/want.json"); do
+            if ! echo "$live_secrets" | grep -qx "$s"; then
+              echo "::error title=Missing environment secret::$name/$s is declared but absent — add it by hand, the API cannot create a value"
+              exit 1
+            fi
+          done
+        done
+
+        # Undeclared environments are never deleted automatically: an
+        # environment carries its secrets and its whole approval history.
+        for name in $(gh api --paginate "repos/$REPO/environments" --jq '.environments[].name'); do
+          if ! jq -e --arg n "$name" '.environments[] | select(.name == $n)' "$CONFIG" > /dev/null; then
+            echo "::warning title=Undeclared environment::$name exists but is not in environments.json — delete it by hand if intended"
+          fi
+        done
+
+        echo "environments: applied"

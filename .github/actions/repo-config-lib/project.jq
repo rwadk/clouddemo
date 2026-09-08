@@ -14,6 +14,15 @@ def project($d):
   | if ($d | type) == "object" and ($a | type) == "object" then
       reduce ($d | keys_unsorted[]) as $k ({};
         .[$k] = ($a[$k] | project($d[$k])))
+    elif ($d | type) == "array" and ($a | type) == "array"
+         and (($d | length) == ($a | length)) then
+      # Equal-length arrays are projected element-wise. A ruleset GET returns
+      # every parameter of every rule whether or not it was declared, so
+      # comparing rule objects whole would be permanent drift. Callers sort
+      # arrays canonically first, which is what makes index alignment valid.
+      # Mismatched lengths mean a rule was added or removed — real drift, so
+      # the arrays are compared whole and the difference shows.
+      [ range(0; $d | length) as $i | ($a[$i] | project($d[$i])) ]
     else
       $a
     end;

@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "prevent_self_review is false on purpose. This repo has one maintainer;",
+    "GitHub will not let a user approve their own deployment, so true would",
+    "make the prd gate permanently unsatisfiable.",
+    "",
+    "deployment_branch_policy is null (any branch may deploy) until the main",
+    "ruleset is enforcing. Setting protected_branches:true before then would",
+    "block every deployment, because no branch is protected yet.",
+    "",
+    "secrets are empty because a declared-but-absent secret is a hard failure:",
+    "the API cannot create one without a value. Add AZURE_CLIENT_ID here once",
+    "the federated credentials exist."
+  ],
+
+  "environments": [
+    {
+      "name": "val",
+      "wait_timer": 0,
+      "prevent_self_review": false,
+      "reviewers": [],
+      "deployment_branch_policy": null,
+      "variables": {},
+      "secrets": []
+    },
+    {
+      "name": "prd",
+      "wait_timer": 0,
+      "prevent_self_review": false,
+      "reviewers": [
+        { "type": "User", "login": "rwadk" }
+      ],
+      "deployment_branch_policy": null,
+      "variables": {},
+      "secrets": []
+    }
+  ]
+}
