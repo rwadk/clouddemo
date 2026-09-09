@@ -4,13 +4,24 @@
     "GitHub will not let a user approve their own deployment, so true would",
     "make the prd gate permanently unsatisfiable.",
     "",
-    "deployment_branch_policy is null (any branch may deploy) until the main",
-    "ruleset is enforcing. Setting protected_branches:true before then would",
-    "block every deployment, because no branch is protected yet.",
+    "deployment_branch_policy stays null (any branch may deploy). The main",
+    "ruleset is enforcing now, so protected_branches:true would finally be",
+    "accepted — but it would break PR plans. cd.yml plans on feature branches",
+    "using environment: val-readonly, and a feature branch is not protected,",
+    "so every PR plan would be refused a credential.",
     "",
-    "secrets are empty because a declared-but-absent secret is a hard failure:",
-    "the API cannot create one without a value. Add AZURE_CLIENT_ID here once",
-    "the federated credentials exist."
+    "Four environments, not two. val-readonly and prd-readonly exist so a plan",
+    "runs as an identity that holds Reader and nothing else. They deliberately",
+    "have no reviewers: their whole purpose is to produce a plan *before*",
+    "anyone is asked to approve anything.",
+    "",
+    "AZURE_CLIENT_ID is a variable, not a secret. Under OIDC a client ID",
+    "authorises nothing on its own — the federated subject does, and it names",
+    "this repository and one environment. Declaring it as a secret would also",
+    "make it unreadable in a diff for no benefit.",
+    "",
+    "secrets stay empty. A declared-but-absent secret is a hard failure: the",
+    "API cannot create one without a value."
   ],
 
   "environments": [
@@ -20,7 +31,20 @@
       "prevent_self_review": false,
       "reviewers": [],
       "deployment_branch_policy": null,
-      "variables": {},
+      "variables": {
+        "AZURE_CLIENT_ID": "ba3a7622-fbbb-4842-91d6-bdbeb499dbde"
+      },
+      "secrets": []
+    },
+    {
+      "name": "val-readonly",
+      "wait_timer": 0,
+      "prevent_self_review": false,
+      "reviewers": [],
+      "deployment_branch_policy": null,
+      "variables": {
+        "AZURE_CLIENT_ID": "b0ea0a63-1dc4-4029-8a6a-5933be79ff01"
+      },
       "secrets": []
     },
     {
@@ -31,7 +55,20 @@
         { "type": "User", "login": "rwadk" }
       ],
       "deployment_branch_policy": null,
-      "variables": {},
+      "variables": {
+        "AZURE_CLIENT_ID": "b71a4e8f-0c40-4d5c-ad48-5ae4dc13101c"
+      },
+      "secrets": []
+    },
+    {
+      "name": "prd-readonly",
+      "wait_timer": 0,
+      "prevent_self_review": false,
+      "reviewers": [],
+      "deployment_branch_policy": null,
+      "variables": {
+        "AZURE_CLIENT_ID": "2f79e0d3-dffe-489c-92f0-8cc9f88d60da"
+      },
       "secrets": []
     }
   ]
