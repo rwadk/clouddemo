@@ -1,0 +1,167 @@
+name: Infra teardown
+
+# Destroys the ephemeral tier of one environment — AKS, VNet, Mongo VM,
+# everything in terraform/envs/<env>.
+#
+# What it deliberately does NOT touch:
+#
+#   terraform/persistent/<env>  the DNS zone is delegated from rwa.dk by hand at
+#                               Simply.com. Re-creating it returns a different
+#                               NS set, so every teardown would cost a manual
+#                               re-delegation and a propagation wait.
+#   terraform/bootstrap         holds the state this workflow reads, the
+#                               resource groups it empties, and the identity it
+#                               runs as. Destroying it orphans everything else.
+#   rg-<project>-<env>          the resource group itself is owned by bootstrap.
+#                               Teardown empties it; it never removes it. That
+#                               is what lets the deploy identity hold
+#                               Contributor on one resource group instead of on
+#                               the subscription.
+#
+# Manual dispatch only. There is no schedule and no push trigger on purpose.
+#
+# Three gates, in order, each cheaper than the one after it:
+#
+#   guard    typed confirmation, holds no credential at all
+#   plan     the destroy plan, produced by a read-only identity
+#   teardown the reviewer approves *that plan*, then it runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: environment to tear down
+        type: choice
+        options: [val, prd]
+        required: true
+      confirm:
+        description: 'type the environment name again to confirm'
+        type: string
+        required: true
+      mode:
+        description: plan (show what would be destroyed) or destroy
+        type: choice
+        options: [plan, destroy]
+        default: plan
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Deliberately first, and deliberately holding no credential. A mistyped
+  # dispatch dies here, before prd's reviewer is ever asked to approve
+  # something that was never going to be right.
+  guard:
+    name: confirm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        shell: bash
+        env:
+          TARGET: ${{ inputs.environment }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "$TARGET" ]; then
+            echo "::error title=Confirmation mismatch::typed '$CONFIRM', expected '$TARGET' — nothing was touched"
+            exit 1
+          fi
+          echo "confirmed teardown of **$TARGET** (${{ inputs.mode }})" >> "$GITHUB_STEP_SUMMARY"
+
+  # The destroy plan, from an identity holding Reader and nothing else. This is
+  # the exact list of what teardown will remove, and it is produced before the
+  # approval is requested — so the reviewer approves a plan they have read
+  # rather than a workflow name they trust.
+  plan:
+    name: destroy plan (${{ inputs.environment }})
+    needs: [guard]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-readonly
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only ever envs/. persistent/ is not referenced anywhere in this file.
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/envs/${{ inputs.environment }}
+          state_container: tfstate-${{ inputs.environment }}
+          state_key: ${{ inputs.environment }}.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: destroy-plan
+          lock: 'false'
+
+  teardown:
+    name: destroy ${{ inputs.environment }}
+    needs: [plan]
+    if: inputs.mode == 'destroy'
+    runs-on: ubuntu-latest
+    # For prd this is the reviewer gate from .github/repo-config/environments.json.
+    # It is also the only source of a credential that can destroy anything:
+    # prd's federated credential trusts repo:<owner>/<repo>:environment:prd, so
+    # an unapproved teardown cannot authenticate, let alone destroy.
+    environment: ${{ inputs.environment }}
+    # Shared with cd.yml. A teardown and a deploy of the same environment
+    # can never hold the same state lock at once.
+    concurrency:
+      group: env-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/envs/${{ inputs.environment }}
+          state_container: tfstate-${{ inputs.environment }}
+          state_key: ${{ inputs.environment }}.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: destroy
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Terraform reports success once state is empty, which is not the same as
+      # the resource group being empty: AKS can strand a load balancer or a
+      # public IP in MC_*, and anything created outside Terraform is invisible
+      # to the destroy. Reported, not failed — a leftover is worth seeing, not
+      # worth marking the teardown broken.
+      - name: Check for leftovers
+        shell: bash
+        env:
+          RG: rg-clouddemo-${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          left=$(az resource list -g "$RG" --query 'length(@)' -o tsv 2>/dev/null || echo unknown)
+
+          {
+            echo "### Teardown of \`${{ inputs.environment }}\`"
+            echo
+            echo "Resource group \`$RG\` retained (owned by bootstrap)."
+            echo "Resources remaining in it: **$left**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$left" != "0" ] && [ "$left" != "unknown" ]; then
+            az resource list -g "$RG" -o table >> "$GITHUB_STEP_SUMMARY" || true
+            echo "::warning title=Leftover resources::$left resource(s) remain in $RG — Terraform state is empty, so these were stranded or created out-of-band"
+          fi
