@@ -33,12 +33,26 @@ variable "environments" {
   default     = ["val", "prd"]
 }
 
-variable "github_repository" {
+variable "github_oidc_subject_prefix" {
   description = <<-EOT
-    owner/repo that federated credentials trust. Appears in the OIDC subject
-    as repo:<owner>/<repo>:environment:<env>, so a token minted by any other
-    repository will not match.
+    Subject prefix GitHub puts in the OIDC token, everything before
+    ":environment:<name>".
+
+    Deliberately not assembled from "repo:<owner>/<repo>". GitHub embeds
+    immutable numeric owner and repository IDs, so the real prefix looks like
+    repo:owner@13893807/repo@1361837722. Assembling the readable form yields a
+    credential that never matches, and the resulting AADSTS700213 names the
+    subject it wanted rather than the one to configure.
+
+    Read it from the repository instead of guessing:
+
+      gh api repos/OWNER/REPO/actions/oidc/customization/sub \
+        --jq .sub_claim_prefix
+
+    The IDs are a feature. Deleting this repository and recreating one with the
+    same name produces different IDs, so the federated credential stops matching
+    rather than silently trusting whatever now owns the name.
   EOT
   type        = string
-  default     = "rwadk/clouddemo"
+  default     = "repo:rwadk@13893807/clouddemo@1361837722"
 }
