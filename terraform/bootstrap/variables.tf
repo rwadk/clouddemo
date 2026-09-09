@@ -32,3 +32,13 @@ variable "environments" {
   type        = list(string)
   default     = ["val", "prd"]
 }
+
+variable "github_repository" {
+  description = <<-EOT
+    owner/repo that federated credentials trust. Appears in the OIDC subject
+    as repo:<owner>/<repo>:environment:<env>, so a token minted by any other
+    repository will not match.
+  EOT
+  type        = string
+  default     = "rwadk/clouddemo"
+}
