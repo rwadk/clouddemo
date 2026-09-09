@@ -18,9 +18,15 @@ terraform apply
 
 ## Migrate this stack's own state into the account it created
 
-1. Take the values from `terraform output backend_config`.
-2. Uncomment the `backend "azurerm"` block in `versions.tf` and fill it in,
-   using `key = "bootstrap.tfstate"`.
+**Already done for this subscription** — `versions.tf` carries the real backend
+block and the state lives in `tfstate-bootstrap`. What follows is what to repeat
+on a fresh subscription, where the storage account does not exist yet.
+
+1. Comment out the `backend "azurerm"` block in `versions.tf` so the first
+   apply runs on local state, then apply.
+2. Take the values from `terraform output backend_blocks` and fill the block
+   back in, using `key = "bootstrap.tfstate"`. The storage account name carries
+   a random suffix, so it differs per subscription.
 3. Re-initialise and let Terraform copy the local state up:
 
 ```sh

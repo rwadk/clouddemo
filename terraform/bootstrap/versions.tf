@@ -16,8 +16,16 @@ terraform {
     }
   }
 
-  # Enabled after the first apply — see README.md in this directory.
-  # backend "azurerm" {}
+  # Migrated here after the first apply. On a brand-new subscription this block
+  # has to be commented out for one run, because the storage account it names
+  # is created by this very stack — see README.md in this directory.
+  backend "azurerm" {
+    resource_group_name  = "rg-clouddemo-tfstate"
+    storage_account_name = "stclouddemotfnrxsl5"
+    container_name       = "tfstate-bootstrap"
+    key                  = "bootstrap.tfstate"
+    use_azuread_auth     = true
+  }
 }
 
 provider "azurerm" {
