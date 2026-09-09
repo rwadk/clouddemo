@@ -74,7 +74,7 @@ resource "azurerm_federated_identity_credential" "deploy" {
   user_assigned_identity_id = azurerm_user_assigned_identity.deploy[each.key].id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = "https://token.actions.githubusercontent.com"
-  subject                   = "repo:${var.github_repository}:environment:${each.key}"
+  subject                   = "${var.github_oidc_subject_prefix}:environment:${each.key}"
 }
 
 resource "azurerm_role_assignment" "deploy_rg" {
@@ -149,7 +149,7 @@ resource "azurerm_federated_identity_credential" "plan" {
   user_assigned_identity_id = azurerm_user_assigned_identity.plan[each.key].id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = "https://token.actions.githubusercontent.com"
-  subject                   = "repo:${var.github_repository}:environment:${each.key}-readonly"
+  subject                   = "${var.github_oidc_subject_prefix}:environment:${each.key}-readonly"
 }
 
 resource "azurerm_role_assignment" "plan_rg" {
