@@ -1,0 +1,145 @@
+name: Terraform stack
+description: Init a stack against the bootstrap backend and run plan, apply or destroy.
+
+# Auth is entirely OIDC. The caller sets ARM_* at job level; nothing here reads
+# a secret, and no client secret exists to read. The federated credential only
+# matches when the calling job declares `environment:`, so a job that forgets
+# the environment fails to authenticate rather than running as the wrong one.
+
+inputs:
+  stack_dir:
+    description: Directory of the stack, e.g. terraform/envs/val
+    required: true
+  state_container:
+    description: Blob container holding this environment's state
+    required: true
+  state_key:
+    description: State blob name, e.g. val.tfstate
+    required: true
+  state_resource_group:
+    description: Resource group of the state storage account
+    required: true
+  state_storage_account:
+    description: State storage account name
+    required: true
+  mode:
+    description: plan, destroy-plan, apply or destroy
+    required: true
+  lock:
+    description: >-
+      Take a state lock. Must be false for read-only identities: the lock is a
+      blob lease, which is a write, and Storage Blob Data Reader cannot take
+      one. Safe to disable for a plan, which never persists state.
+    required: false
+    default: 'true' 
+
+outputs:
+  changes:
+    description: "true when plan found changes to apply"
+    value: ${{ steps.plan.outputs.changes }}
+  drift:
+    description: "true when live infrastructure diverged from state, whether or not that implies a change to apply"
+    value: ${{ steps.plan.outputs.drift }}
+
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.9.8
+        terraform_wrapper: false
+
+    - name: Init
+      shell: bash
+      working-directory: ${{ inputs.stack_dir }}
+      run: |
+        set -euo pipefail
+        terraform init -input=false -no-color \
+          -backend-config="resource_group_name=${{ inputs.state_resource_group }}" \
+          -backend-config="storage_account_name=${{ inputs.state_storage_account }}" \
+          -backend-config="container_name=${{ inputs.state_container }}" \
+          -backend-config="key=${{ inputs.state_key }}" \
+          -backend-config="use_azuread_auth=true" \
+          -backend-config="use_oidc=true"
+
+    - name: Validate
+      shell: bash
+      working-directory: ${{ inputs.stack_dir }}
+      run: terraform validate -no-color
+
+    # Always produced, including for destroy — a destroy plan is the thing
+    # worth reading before a teardown, so it goes in the job summary too.
+    #
+    # plan refreshes against live Azure, so this reads the real environment and
+    # not just the state file. Its output is captured rather than re-rendered
+    # with `terraform show`, because the "Objects have changed outside of
+    # Terraform" drift note is printed by plan itself and is not part of a
+    # saved plan file.
+    - name: Plan
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.stack_dir }}
+      run: |
+        set -euo pipefail
+        args=(-input=false -no-color -out=tfplan)
+
+        case "${{ inputs.mode }}" in
+          destroy|destroy-plan) args+=(-destroy) ;;
+        esac
+
+        if [ "${{ inputs.lock }}" = false ]; then
+          args+=(-lock=false)
+        else
+          args+=(-lock-timeout=5m)
+        fi
+
+        set +e
+        terraform plan "${args[@]}" -detailed-exitcode 2>&1 | tee plan.txt
+        code=${PIPESTATUS[0]}
+        set -e
+
+        case $code in
+          0) echo "changes=false" >> "$GITHUB_OUTPUT" ;;
+          2) echo "changes=true"  >> "$GITHUB_OUTPUT" ;;
+          *) exit $code ;;
+        esac
+
+        # Drift is reported independently of the exit code. -detailed-exitcode
+        # returns 2 only when there is something to *apply*; drift in an
+        # attribute Terraform does not manage refreshes silently into state and
+        # still exits 0. A caller that wants to fail on drift needs this, not
+        # `changes`.
+        if grep -q "Objects have changed outside of Terraform" plan.txt; then
+          echo "drift=true" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Drift in ${{ inputs.stack_dir }}::live infrastructure diverged from state — see the plan in the job summary"
+        else
+          echo "drift=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        # head, not tail: the drift note is printed at the top of the output,
+        # so truncating from the end is what preserves it.
+        {
+          echo "### \`${{ inputs.stack_dir }}\` — ${{ inputs.mode }} plan"
+          echo '```terraform'
+          head -c 60000 plan.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Apply
+      if: (inputs.mode == 'apply' || inputs.mode == 'destroy') && steps.plan.outputs.changes == 'true'
+      shell: bash
+      working-directory: ${{ inputs.stack_dir }}
+      run: terraform apply -input=false -no-color -lock-timeout=5m tfplan
+
+    - name: No changes
+      if: (inputs.mode == 'apply' || inputs.mode == 'destroy') && steps.plan.outputs.changes == 'false'
+      shell: bash
+      run: echo "::notice title=${{ inputs.stack_dir }}::already converged, nothing to ${{ inputs.mode }}"
+
+    # A plan file names every resource in the stack and can embed attribute
+    # values. It is not an artifact worth leaving on a public repository.
+    - name: Shred plan
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.stack_dir }}
+      run: rm -f tfplan plan.txt

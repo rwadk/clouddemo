@@ -1,0 +1,257 @@
+name: CD
+
+# Places a known-good artifact into environments. It never builds: CI owns the
+# artifact lifecycle and hands over a digest, so a redeploy is a lookup rather
+# than a rebuild, and a rollback is this workflow with an older digest.
+#
+#   workflow_call      from ci.yml, after build and test pass on main
+#   workflow_dispatch  redeploy, rollback, or testing a change to this file
+#                      from a feature branch before merging it
+#
+# There is no push trigger. Reaching prd requires a green val first, and there
+# is no input that skips it.
+#
+# ---------------------------------------------------------------------------
+# Gates, in order
+# ---------------------------------------------------------------------------
+#
+#   1. Serialisation      workflow-level concurrency, below. Active.
+#   2. Recovery approval  when the previous CD run failed. Commented out until
+#                         the cd-recovery environment exists — see below.
+#   3. prd approval       environment: prd. Active, and the prd plan runs before
+#                         it so the approval is never blind.
+
+on:
+  workflow_call:
+    inputs:
+      image_digest:
+        description: Image to converge both environments onto. Empty until an app exists.
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: "Image digest to deploy (sha256:…). Empty resolves the current main build."
+        type: string
+        required: false
+        default: ''
+      mode:
+        description: plan (show only) or apply
+        type: choice
+        options: [plan, apply]
+        default: plan
+
+# Gate 1. Serialises CD against itself, so two deploys never interleave.
+#
+# Note what this does NOT do: GitHub holds only one pending run per group. If a
+# third run arrives while one is running and one is waiting, the *waiting* one
+# is cancelled as superseded rather than queued behind it. The real behaviour is
+# "finish the current run, then deploy the newest queued commit" — intermediate
+# commits are skipped. For CD that is usually what you want, but it means a
+# commit can pass CI and never be deployed on its own.
+#
+# This is workflow-level. The job-level env-<env> groups below are a different
+# gate: they stop CD colliding with infra-teardown on the same state. A job can
+# only belong to one group, so both layers are needed.
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ## -------------------------------------------------------------------------
+  ## Gate 2 — recovery approval. NOT YET ACTIVE.
+  ## -------------------------------------------------------------------------
+  ##
+  ## A failed CD run can leave infrastructure half-applied, and the failure is
+  ## most likely in val because val runs first. Applying the next change on top
+  ## of a half-applied environment compounds the damage, so the whole run pauses
+  ## for a human rather than only prd.
+  ##
+  ## An environment cannot be attached conditionally, so the gate is a job that
+  ## exists purely to be approved, and is skipped when the previous run passed.
+  ##
+  ## Blocked on a repo-config PR creating the `cd-recovery` environment with a
+  ## required reviewer. Uncomment both jobs and add `check-previous` and
+  ## `recovery-gate` to the `val` job's `needs` once it exists.
+  #
+  # check-previous:
+  #   name: previous run
+  #   runs-on: ubuntu-latest
+  #   outputs:
+  #     failed: ${{ steps.check.outputs.failed }}
+  #   steps:
+  #     - id: check
+  #       shell: bash
+  #       env:
+  #         GH_TOKEN: ${{ github.token }}
+  #       run: |
+  #         set -euo pipefail
+  #         # Most recent *completed* CD run on main, excluding this one.
+  #         prev=$(gh api "repos/${{ github.repository }}/actions/workflows/cd.yml/runs?branch=main&status=completed&per_page=1" \
+  #                  --jq '.workflow_runs[0].conclusion // "none"')
+  #         [ "$prev" = "success" ] || [ "$prev" = "none" ] && failed=false || failed=true
+  #         echo "failed=$failed" >> "$GITHUB_OUTPUT"
+  #         echo "previous CD run: $prev (gate required: $failed)" >> "$GITHUB_STEP_SUMMARY"
+  #
+  # recovery-gate:
+  #   name: recovery approval
+  #   needs: [check-previous]
+  #   if: needs.check-previous.outputs.failed == 'true'
+  #   environment: cd-recovery
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - shell: bash
+  #       run: echo "previous CD run failed — approved to continue"
+
+  val:
+    name: ${{ inputs.mode || 'apply' }} val
+    # When gate 2 lands:
+    #   needs: [check-previous, recovery-gate]
+    #   if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    environment: val
+    # Shared with infra-teardown. Keyed on the environment rather than on this
+    # workflow, so a deploy and a teardown of one environment can never hold the
+    # same state lock. Application deploys will join the same group.
+    concurrency:
+      group: env-val
+      cancel-in-progress: false
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Persistent first: the ephemeral stack reads its outputs for the DNS
+      # zone, so on a first-ever deploy this is what makes that read resolve.
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/persistent/val
+          state_container: tfstate-val
+          state_key: val-persistent.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: ${{ inputs.mode || 'apply' }}
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/envs/val
+          state_container: tfstate-val
+          state_key: val.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: ${{ inputs.mode || 'apply' }}
+
+      # SCAFFOLD. Deploys inputs.image_digest into the cluster once
+      # modules/app-platform exists. Skipped while the digest is empty, which is
+      # every run until there is an app.
+      - name: Deploy app
+        if: inputs.image_digest != ''
+        shell: bash
+        run: echo "::notice title=scaffold::would deploy ${{ inputs.image_digest }} to val"
+
+  # The prd plan, produced before the approval is requested and by an identity
+  # that cannot change anything. This is what the reviewer reads.
+  #
+  # It is also what closes a subtle hole: an app change deployed to val whose
+  # prd approval was declined leaves prd on an older digest, and a later
+  # terraform-only push would carry the declined image into prd. Because the
+  # deploy pins by digest, that shows up here as an image diff in the plan the
+  # reviewer is approving. With a mutable tag it would be invisible.
+  prd-plan:
+    name: plan prd
+    needs: [val]
+    runs-on: ubuntu-latest
+    environment: prd-readonly
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/persistent/prd
+          state_container: tfstate-prd
+          state_key: prd-persistent.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: plan
+          lock: 'false'
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/envs/prd
+          state_container: tfstate-prd
+          state_key: prd.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: plan
+          lock: 'false'
+
+  # Gate 3. Not advisory: prd's federated credential trusts the subject
+  # …:environment:prd, so until this deployment is approved the job holds no
+  # Azure credential at all.
+  prd:
+    name: apply prd
+    # `needs` does the gating. If val or the prd plan fails, prd never runs, and
+    # there is no dispatch input that reaches prd on its own.
+    needs: [prd-plan]
+    # Skipped when dispatched with mode=plan: prd-plan above already produced
+    # the plan, from an identity that cannot apply it, so there is nothing left
+    # for this job to add and no reason to request an approval.
+    if: (inputs.mode || 'apply') == 'apply'
+    runs-on: ubuntu-latest
+    environment: prd
+    concurrency:
+      group: env-prd
+      cancel-in-progress: false
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/persistent/prd
+          state_container: tfstate-prd
+          state_key: prd-persistent.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: apply
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/envs/prd
+          state_container: tfstate-prd
+          state_key: prd.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: apply
+
+      # Same digest val received. That identity is the promotion guarantee.
+      - name: Deploy app
+        if: inputs.image_digest != ''
+        shell: bash
+        run: echo "::notice title=scaffold::would deploy ${{ inputs.image_digest }} to prd"

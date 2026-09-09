@@ -1,0 +1,231 @@
+name: CI
+
+# Turns source into a validated artifact. Everything here either inspects a
+# proposal or produces something; nothing here changes an environment.
+#
+#   pull_request   plan val and prd read-only, build the image without pushing
+#   push to main   build, test, push, then hand the digest to CD
+#
+# The split from cd.yml is deliberate. CI owns the artifact lifecycle, CD owns
+# placing a known-good artifact into environments. If CD knew how to build, the
+# artifact would stop being the interface between them and a redeploy would
+# always mean a rebuild — which makes rollback a build rather than a lookup.
+
+on:
+  # Deliberately unfiltered. ci-ok has to report on *every* PR for the branch
+  # ruleset to be able to require it; a job that skips reports nothing, and a
+  # required check that never reports blocks the PR forever. The `changes` job
+  # below is what keeps an unfiltered trigger cheap.
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Everything downstream is conditional on this. Uses the API rather than a
+  # git diff so it does not depend on checkout fetch-depth, and so a PR compares
+  # against its actual merge base rather than whatever main happens to be now.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      terraform: ${{ steps.filter.outputs.terraform }}
+      app: ${{ steps.filter.outputs.app }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - id: filter
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              files=$(gh api --paginate "repos/$REPO/pulls/${{ github.event.number }}/files" --jq '.[].filename')
+              ;;
+            push)
+              before="${{ github.event.before }}"
+              # All-zero on a branch's first push or after a force-push, and the
+              # compare API rejects it. Treat unknown history as "everything
+              # changed" rather than silently skipping a deploy.
+              if [ "$before" = "0000000000000000000000000000000000000000" ]; then
+                files="__unknown__"
+              else
+                files=$(gh api "repos/$REPO/compare/$before...${{ github.sha }}" --jq '.files[].filename')
+              fi
+              ;;
+          esac
+
+          match() { [ "$files" = "__unknown__" ] && echo true || { echo "$files" | grep -qE "$1" && echo true || echo false; }; }
+
+          tf=$(match '^terraform/')
+          app=$(match '^(app|src)/|^Dockerfile$')
+          wf=$(match '^\.github/(workflows|actions)/')
+
+          {
+            echo "terraform=$tf"
+            echo "app=$app"
+            echo "workflows=$wf"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Changed areas"
+            echo
+            echo "| area | changed |"
+            echo "|---|---|"
+            echo "| terraform | $tf |"
+            echo "| app | $app |"
+            echo "| workflows | $wf |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Both environments, because a change that is harmless in val can be
+  # destructive in prd — different node counts, the SSH toggle, anything
+  # env-specific. Seeing prd's diff while deciding whether to merge is the
+  # point; cd.yml re-plans prd before the gate, but that is after merge.
+  #
+  # Runs as <env>-readonly: Reader on the resource groups, Storage Blob Data
+  # Reader on the state container, and nothing it can write anywhere.
+  plan:
+    name: plan ${{ matrix.env }}
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.terraform == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [val, prd]
+    environment: ${{ matrix.env }}-readonly
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/persistent/${{ matrix.env }}
+          state_container: tfstate-${{ matrix.env }}
+          state_key: ${{ matrix.env }}-persistent.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: plan
+          lock: 'false'
+
+      - uses: ./.github/actions/terraform-stack
+        with:
+          stack_dir: terraform/envs/${{ matrix.env }}
+          state_container: tfstate-${{ matrix.env }}
+          state_key: ${{ matrix.env }}.tfstate
+          state_resource_group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          mode: plan
+          lock: 'false'
+
+  # SCAFFOLD. There is no application and no Dockerfile yet, so the build steps
+  # are placeholders — but the conditional logic and the digest plumbing are
+  # real, so the wiring is exercised before there is an app to break.
+  #
+  # The contract that matters: this job ALWAYS emits a digest on main, even when
+  # it does not build one. A terraform-only push resolves the current `main` tag
+  # instead, so CD receives a digest either way and converges the environment
+  # onto the image that is already running. Making the digest optional would
+  # mean a terraform-only deploy leaves the app unmanaged for that run — half
+  # desired-state, half push-based.
+  build:
+    name: build
+    needs: [changes]
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.digest.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        if: needs.changes.outputs.app == 'true'
+        shell: bash
+        run: |
+          echo "::notice title=scaffold::no Dockerfile yet — build is a placeholder"
+          # TODO: docker build, tag sha-${{ github.sha }}
+
+      - name: Test
+        if: needs.changes.outputs.app == 'true'
+        shell: bash
+        run: echo "::notice title=scaffold::no tests yet"
+
+      # Push and digest resolution only happen on main. A pull_request build is
+      # verification that the image *builds*; it deliberately never pushes, so a
+      # fork PR cannot write to the registry.
+      - id: digest
+        name: Resolve image digest
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # TODO, once ACR exists in terraform/persistent/shared:
+          #
+          #   app changed → docker push sha-${{ github.sha }}, move the `main`
+          #                 tag, and emit the digest that was just pushed
+          #   otherwise   → az acr repository show-manifests, resolve the `main`
+          #                 tag to its digest, and emit that
+          #
+          # Pin by digest, never by tag. A tag is mutable, so ":main" deployed to
+          # prd is a promise; "@sha256:…" is a proof, and it is what makes the
+          # val→prd promotion verifiable rather than aspirational.
+
+          echo "image_digest=" >> "$GITHUB_OUTPUT"
+          echo "::notice title=scaffold::no registry yet — empty digest, CD deploys infrastructure only"
+
+  # The single requireable check. Conditional jobs that skip report no status,
+  # so requiring `plan` directly would deadlock any PR that does not touch
+  # terraform — the same trap the ruleset comment already describes for
+  # reconcile. This runs unconditionally and passes when nothing FAILED, which
+  # is not the same as everything having run.
+  ci-ok:
+    name: ci-ok
+    needs: [changes, plan, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "dependency results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error title=CI failed::a required job reported '$r'"; exit 1 ;;
+            esac
+          done
+          echo "all green (skipped counts as green — see the changes job)"
+
+  # The handoff. CD is a reusable workflow rather than something triggered by
+  # workflow_run, because workflow_run only ever uses the file on the default
+  # branch — a change to cd.yml could not be tested before merging it. Given
+  # that OIDC federation was only provable on a real Actions run, adopting a
+  # trigger that makes CD changes unverifiable until after merge is the wrong
+  # trade. workflow_dispatch on cd.yml still targets any branch, so CD changes
+  # remain testable from a feature branch.
+  deploy:
+    name: deploy
+    needs: [changes, build, ci-ok]
+    if: |
+      github.event_name == 'push' &&
+      needs.ci-ok.result == 'success' &&
+      (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.app == 'true')
+    uses: ./.github/workflows/cd.yml
+    with:
+      image_digest: ${{ needs.build.outputs.image_digest }}
+    secrets: inherit
