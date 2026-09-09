@@ -12,7 +12,17 @@
     "are declared disabled because they cannot be enabled here. A PATCH to",
     "enable either returns 200 and changes nothing \u2014 they need GitHub Advanced",
     "Security, which a personal public repo does not have. Declaring 'enabled'",
-    "would be permanent, unfixable drift."
+    "would be permanent, unfixable drift.",
+    "",
+    "The AZURE_* and TFSTATE_* variables come from `terraform output",
+    "github_environment_variables` in terraform/bootstrap. They are identifiers,",
+    "not credentials: under OIDC the federated subject authorises, and it names",
+    "this repository and one environment. AZURE_CLIENT_ID is per-environment and",
+    "lives in environments.json instead, so `environment:` selects the identity.",
+    "",
+    "prune_variables is true, so anything set by hand in the UI and not declared",
+    "here is deleted on the next reconcile. These four had to land before cd.yml",
+    "could authenticate at all."
   ],
   "settings": {
     "name": "clouddemo",
@@ -68,7 +78,11 @@
   },
   "variables": {
     "REPO_RECONCILIATOR_APP_ID": "4877182",
-    "SSH_EXPOSE_PUBLICLY": "false"
+    "SSH_EXPOSE_PUBLICLY": "false",
+    "AZURE_TENANT_ID": "4b80497b-bb93-4773-af95-d4cf615778fe",
+    "AZURE_SUBSCRIPTION_ID": "32f1c7ae-1a45-4bef-b89e-0e669ae5ee66",
+    "TFSTATE_RESOURCE_GROUP": "rg-clouddemo-tfstate",
+    "TFSTATE_STORAGE_ACCOUNT": "stclouddemotfnrxsl5"
   },
   "secrets": [
     "REPO_RECONCILIATOR_APP_KEY"
