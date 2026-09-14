@@ -129,6 +129,7 @@ jobs:
       TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
       TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
       TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -181,6 +182,7 @@ jobs:
       TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
       TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
       TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -229,6 +231,7 @@ jobs:
       TF_VAR_state_resource_group_name: ${{ vars.TFSTATE_RESOURCE_GROUP }}
       TF_VAR_state_storage_account_name: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
       TF_VAR_ssh_expose_publicly: ${{ vars.SSH_EXPOSE_PUBLICLY }}
+      TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
 

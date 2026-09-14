@@ -22,7 +22,14 @@
     "",
     "prune_variables is true, so anything set by hand in the UI and not declared",
     "here is deleted on the next reconcile. These four had to land before cd.yml",
-    "could authenticate at all."
+    "could authenticate at all.",
+    "",
+    "SSH_PUBLIC_KEY is the public half of a keypair dedicated to this exercise,",
+    "not a personal one: the Mongo VM is an end-of-life image with SSH reachable",
+    "from the internet and an identity that can create VMs. A public key",
+    "authorises nothing on its own, so it is a variable rather than a secret and",
+    "is readable in a diff, which is where it belongs \u2014 seeing which key can",
+    "reach that host should not require API access."
   ],
   "settings": {
     "name": "clouddemo",
@@ -82,7 +89,8 @@
     "AZURE_TENANT_ID": "4b80497b-bb93-4773-af95-d4cf615778fe",
     "AZURE_SUBSCRIPTION_ID": "32f1c7ae-1a45-4bef-b89e-0e669ae5ee66",
     "TFSTATE_RESOURCE_GROUP": "rg-clouddemo-tfstate",
-    "TFSTATE_STORAGE_ACCOUNT": "stclouddemotfnrxsl5"
+    "TFSTATE_STORAGE_ACCOUNT": "stclouddemotfnrxsl5",
+    "SSH_PUBLIC_KEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMAop5SfK/R3JqnXNS0uNP2Sh/+LR4iIzgQbofpCYMMQ clouddemo-mongo"
   },
   "secrets": [
     "REPO_RECONCILIATOR_APP_KEY"
