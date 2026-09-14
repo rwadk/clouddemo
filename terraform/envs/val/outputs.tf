@@ -12,3 +12,13 @@ output "dns_zone_name" {
   description = "Public zone this environment publishes into, read from the persistent tier."
   value       = data.terraform_remote_state.persistent.outputs.dns_zone_name
 }
+
+output "vnet_name" {
+  description = "VNet for this environment."
+  value       = module.network.vnet_name
+}
+
+output "aks_subnet_cidr" {
+  description = "The only source permitted to reach MongoDB's port."
+  value       = module.network.aks_subnet_cidr
+}
