@@ -227,6 +227,18 @@ confirmation with no credential at all, a read-only job produces the **destroy**
 plan, and only then is the reviewer asked. The approval is for a list of
 resources you have read.
 
+It also does not trust its own exit code. Terraform reporting success means its
+*state* is empty, which is not the same as the environment being gone — AKS can
+strand a load balancer, a subnet can refuse to delete while a service
+association link survives, and anything created outside Terraform is invisible
+to the destroy. So a final step queries live Azure and **fails** on anything
+left behind, including a surviving `MC_*` node resource group.
+
+Recovery is deliberately manual: delete the leftovers, re-run the workflow.
+That only works if the run goes red, which is why this is an error rather than
+a warning — a green run with a note in the summary is the one outcome that
+leaves a stranded resource billing quietly.
+
 There is no way to reach prd without a green val first, and no dispatch input
 that skips it.
 

@@ -141,27 +141,62 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # Terraform reports success once state is empty, which is not the same as
-      # the resource group being empty: AKS can strand a load balancer or a
-      # public IP in MC_*, and anything created outside Terraform is invisible
-      # to the destroy. Reported, not failed — a leftover is worth seeing, not
-      # worth marking the teardown broken.
-      - name: Check for leftovers
+      # Terraform reporting success means its state is empty, which is not the
+      # same as the environment being gone. AKS can strand a load balancer or a
+      # public IP, a subnet can refuse to delete while a service association
+      # link survives, and anything created outside Terraform is invisible to
+      # the destroy entirely.
+      #
+      # So the verdict comes from the live environment rather than from the
+      # tool's exit code — and it FAILS on anything left behind. Recovery is
+      # manual by choice, which only works if the workflow goes red; a green run
+      # with a warning buried in the summary is the one outcome that leaves a
+      # stranded resource billing quietly.
+      - name: Verify the environment is gone
         shell: bash
         env:
           RG: rg-clouddemo-${{ inputs.environment }}
         run: |
           set -euo pipefail
+
           left=$(az resource list -g "$RG" --query 'length(@)' -o tsv 2>/dev/null || echo unknown)
+
+          # AKS puts its load balancer, public IPs and NICs in a node resource
+          # group of its own. Azure deletes it with the cluster, so one surviving
+          # here means the cluster destroy did not finish cleanly.
+          mc=$(az group list --query "[?starts_with(name,'MC_${RG}_')].name" -o tsv 2>/dev/null || echo "")
+          mc_count=$(printf '%s' "$mc" | grep -c . || true)
 
           {
             echo "### Teardown of \`${{ inputs.environment }}\`"
             echo
-            echo "Resource group \`$RG\` retained (owned by bootstrap)."
-            echo "Resources remaining in it: **$left**"
+            echo "| check | result |"
+            echo "|---|---|"
+            echo "| resources left in \`$RG\` | $left |"
+            echo "| surviving \`MC_*\` groups | ${mc_count:-0} |"
+            echo
+            echo "\`$RG\` itself is retained on purpose — bootstrap owns it."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$left" != "0" ] && [ "$left" != "unknown" ]; then
-            az resource list -g "$RG" -o table >> "$GITHUB_STEP_SUMMARY" || true
-            echo "::warning title=Leftover resources::$left resource(s) remain in $RG — Terraform state is empty, so these were stranded or created out-of-band"
+          fail=0
+
+          if [ "$left" = "unknown" ]; then
+            echo "::error title=Could not verify::listing $RG failed — treat the teardown as incomplete"
+            fail=1
+          elif [ "$left" != "0" ]; then
+            echo "#### Remaining in \`$RG\`" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            az resource list -g "$RG" -o table >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Leftover resources::$left resource(s) remain in $RG after a successful destroy — stranded, or created outside Terraform"
+            fail=1
           fi
+
+          if [ "${mc_count:-0}" != "0" ]; then
+            echo "$mc" | sed 's/^/  /' >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Node resource group survived::$mc — delete it by hand, then re-run the teardown"
+            fail=1
+          fi
+
+          [ "$fail" = "0" ] || exit 1
+          echo "environment is empty"
