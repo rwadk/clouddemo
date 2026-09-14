@@ -47,13 +47,19 @@ resource "azurerm_key_vault" "env" {
   tags = local.tags
 }
 
-# Whoever is applying. In CI that is this environment's deploy identity, which
-# is what needs to grant the VM and the workload identities their access later.
-resource "azurerm_role_assignment" "deploy_kv" {
-  scope                = azurerm_key_vault.env.id
-  role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
+# No data-plane grant for the deploy identity, deliberately.
+#
+# Terraform never reads or writes a secret here — the VM writes its own
+# connection string, and External Secrets reads it. Creating role assignments
+# *on* the vault is an ARM operation, already covered by the RBAC Administrator
+# that bootstrap granted on this resource group.
+#
+# An earlier version granted it Key Vault Secrets Officer via
+# data.azurerm_client_config.current.object_id, which resolves to whoever is
+# running. Plans run as <env>-readonly and applies run as the deploy identity,
+# so the assignment churned on every single run: each plan showed a phantom
+# replacement and each apply flipped it back. The grant was unnecessary as well
+# as unstable, so it is gone rather than pinned to a variable.
 
 # The operator, explicitly. Subscription Owner grants nothing on the Key Vault
 # data plane — the same gap bootstrap hit with blob storage — so importing the
