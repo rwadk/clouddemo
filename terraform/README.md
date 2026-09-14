@@ -161,6 +161,19 @@ after merge is the wrong trade. `workflow_dispatch` still targets any branch,
 so CD remains testable from a feature branch — which is also why
 `deployment_branch_policy` stays null.
 
+### Skipped status propagates — `!cancelled()` on anything downstream of `ci-ok`
+
+`plan` is PR-only, so it is skipped on every push to `main`. `ci-ok` depends on
+it and runs anyway via `always()`, reporting success.
+
+GitHub still propagates that skip **transitively**: any job depending on `ci-ok`
+is skipped too, unless its own `if` contains a status function. That silently
+disabled CD entirely — every push to `main` produced a green CI run that
+deployed nothing.
+
+So `deploy` carries `!cancelled()`. Because a status function also drops the
+implicit `success()` check, the gate on `ci-ok` is then stated explicitly.
+
 ### `ci-ok` is the requireable check
 
 A conditional job that skips reports no status, so requiring `plan` directly
