@@ -59,3 +59,20 @@ variable "ssh_admin_cidr" {
   type        = string
   default     = "0.0.0.0/32"
 }
+
+variable "enable_container_insights" {
+  description = <<-EOT
+    Container Insights on the AKS cluster. Off by default.
+
+    At defaults it collects container stdout/stderr and performance counters —
+    1-3 GB per day on a small cluster, which at 19.19 DKK/GB is several times
+    the monthly budget. The exercise grades Defender for Cloud findings, not
+    observability, so nothing here depends on it.
+
+    A flag rather than an omission, so turning it on for one session is a
+    variable change rather than an edit to the module call. The workspace's
+    daily_quota_gb stays as the backstop when it is on.
+  EOT
+  type        = bool
+  default     = false
+}

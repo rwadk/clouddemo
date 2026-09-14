@@ -253,6 +253,25 @@ The job-level `env-<env>` groups are a separate concern from gate 1: they stop
 CD colliding with `infra-teardown` on the same state. A job can only belong to
 one group, so both layers exist.
 
+### Cost guardrails
+
+Two things in the ephemeral stacks exist purely to stop an idle mistake costing
+real money.
+
+**Container Insights is off**, via `enable_container_insights`, defaulting to
+false. At defaults it collects container stdout/stderr and perf counters — 1-3
+GB per day on a small cluster. Log Analytics ingestion is **19.19 DKK/GB** in
+Sweden Central, so one GB is 77% of the monthly budget and a forgotten weekend
+is roughly 100 DKK. The exercise grades Defender for Cloud findings, not
+observability, so nothing depends on it. It is a flag rather than an omission,
+so enabling it for a session is a variable change.
+
+**`daily_quota_gb = 0.5`** on the workspace is the backstop for when it is on.
+It is a hard stop — ingestion is dropped at the cap — unlike the budget alert,
+which only reports after the money is spent. Tearing down after each session
+protects the steady state but not the session you forget to end, which is
+exactly the case the cap covers.
+
 ### Still to do when the app lands
 
 - **ACR needs a home.** The image is deliberately shared between environments,

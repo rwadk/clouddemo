@@ -70,13 +70,25 @@ variable "ssh_public_key" {
 
 variable "vm_size" {
   description = <<-EOT
-    VM SKU. Bsv2 rather than the older Bs: Azure refuses additional quota for
-    standardBSFamily (DeprecatedQuotaType), so the legacy B-series is capped at
-    whatever a subscription starts with. Bsv2 is current generation, still
-    burstable, and B2s_v2 carries 8 GiB against B2s's 4 GiB.
+    VM SKU. Quota, not preference, has picked this twice — and quota is per
+    region, so it had to be picked again after the move to Sweden Central.
+
+    West Europe: standardBSFamily refuses additional quota (DeprecatedQuotaType),
+    so the legacy B-series is capped at whatever a subscription starts with.
+    Bsv2 was granted 30 there.
+
+    Sweden Central: the reverse. standardBsv2Family returns
+    QuotaNotAvailableForResource at every value tried — capacity, not the number
+    asked for — while the legacy family sits at its unraisable default of 10.
+    DASv4 and DSv3 also now refuse with DeprecatedQuotaType.
+
+    standardDsv6Family was granted 20. D2s_v6 keeps the 8 GiB that B2s_v2 had,
+    is current generation, and costs 0.687 DKK/hr against B2s_v2's 0.554 — which
+    is cheaper than halving RAM, or than running at exactly 10 of 10 vCPU with
+    no room for an AKS surge node during a node-pool upgrade.
   EOT
   type        = string
-  default     = "Standard_B2s_v2"
+  default     = "Standard_D2s_v6"
 }
 
 variable "os_image" {
