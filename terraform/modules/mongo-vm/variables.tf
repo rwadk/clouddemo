@@ -59,9 +59,14 @@ variable "ssh_admin_cidr" {
 
 variable "ssh_public_key" {
   description = <<-EOT
-    Public key for the admin user. Password authentication is disabled
-    regardless of exposure — 'SSH exposed to the internet' is satisfied either
-    way, and password auth only shortens the time to compromise.
+    Public key for the admin user, in authorized_keys format. Password
+    authentication is disabled regardless of exposure — 'SSH exposed to the
+    internet' is satisfied either way, and password auth only shortens the time
+    to compromise.
+
+    Use a keypair dedicated to this exercise. This VM is an end-of-life image
+    with SSH reachable from the internet and an identity that can create VMs;
+    it should not be reachable with a key used for anything else.
   EOT
   type        = string
 }
@@ -116,11 +121,6 @@ variable "mongodb_version" {
   default     = "5.0"
 }
 
-variable "backup_storage_account_id" {
-  description = "Storage account the daily mongodump is written to."
-  type        = string
-}
-
 variable "overpermissive_role_scope" {
   description = <<-EOT
     Scope for the VM managed identity's Contributor assignment. The exercise
@@ -136,4 +136,41 @@ variable "tags" {
   description = "Tags applied to all resources."
   type        = map(string)
   default     = {}
+}
+
+variable "admin_username" {
+  description = "Admin user for SSH. Not root; the image disallows it."
+  type        = string
+  default     = "azureuser"
+}
+
+variable "key_vault_id" {
+  description = <<-EOT
+    Key Vault the VM writes its connection string into. Lives in the persistent
+    tier, so this is a role assignment made by the ephemeral stack against a
+    resource in another one — which works because the deploy identity holds
+    RBAC Administrator on both resource groups.
+  EOT
+  type        = string
+}
+
+variable "key_vault_name" {
+  description = "Vault name, passed to cloud-init so the VM can find it."
+  type        = string
+}
+
+variable "connection_string_secret_name" {
+  description = <<-EOT
+    Secret holding the full MongoDB connection string, written by the VM and
+    read by External Secrets Operator into the Kubernetes Secret the app takes
+    its MONGO_URI env var from.
+  EOT
+  type        = string
+  default     = "mongo-connection-string"
+}
+
+variable "mongodb_database" {
+  description = "Database the application uses."
+  type        = string
+  default     = "todos"
 }

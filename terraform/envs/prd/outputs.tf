@@ -22,3 +22,13 @@ output "aks_subnet_cidr" {
   description = "The only source permitted to reach MongoDB's port."
   value       = module.network.aks_subnet_cidr
 }
+
+output "mongo_ssh_command" {
+  description = "SSH target for the Mongo VM."
+  value       = module.mongo_vm.ssh_command
+}
+
+output "mongo_private_ip" {
+  description = "What the cluster connects to."
+  value       = module.mongo_vm.private_ip
+}

@@ -443,6 +443,83 @@ manual paste of the zone's name servers; destroying and re-creating a zone
 returns a *different* NS set, so a teardown that took the zone with it would
 cost a trip to Simply.com and a propagation wait every single time.
 
+## The Mongo VM
+
+Three graded weaknesses in one module: an end-of-life OS and database, SSH
+reachable from the internet, and a managed identity with rights it should not
+have. Each is required; each is scoped so a compromise stops at one
+environment.
+
+### The two rules that resolve a contradiction
+
+The brief asks for SSH open to the internet **and** a database reachable only
+from Kubernetes. Those read as contradictory until you see them as one NSG:
+
+| Rule | Source | Port |
+|---|---|---|
+| `ssh` | `0.0.0.0/0`, or `ssh_admin_cidr` when the toggle is off | 22 |
+| `mongodb-from-aks` | the AKS subnet CIDR, and nothing else | 27017 |
+
+`mongod` itself binds `0.0.0.0`. "Restricted to Kubernetes" is enforced by the
+rule, not by the daemon — which is the honest place for it and the one you can
+point at.
+
+### Contributor, bounded
+
+The brief asks for "overly permissive permissions (e.g. able to create VMs)".
+Contributor satisfies that. What is not required is the usual way it gets
+written — at subscription scope.
+
+Scoped to this environment's resource group, the escalation is identical to
+demonstrate: compromise the VM, assume its identity, create more VMs. But it
+cannot reach the other environment, the Terraform state, or the CD identities.
+
+### The credential never touches Terraform or CI
+
+cloud-init data is readable through the Azure API by anyone with Reader on the
+VM, so it carries **no secret** — only the vault name to write to and the
+identity to authenticate as.
+
+The VM generates its own password at first boot and writes the whole connection
+string, being the only thing that knows its own private IP. On a rebuild it
+finds the existing secret and reuses the password, rewriting the address —
+so the credential survives teardown and the app's synced Secret keeps working.
+
+Nothing else ever holds it: not Terraform state, which stores values in
+plaintext; not a pipeline log; not cloud-init.
+
+### Getting in without opening SSH
+
+`ssh_admin_cidr` defaults to `0.0.0.0/32`, which matches nothing — so with the
+toggle off, **nobody** can SSH in, including you. That is deliberate: the
+exposure is for scanning and the demo, not for day-to-day debugging.
+
+Two ways in that need no network path at all:
+
+```sh
+# runs as root through the Azure agent
+az vm run-command invoke -g <rg> -n <vm> \
+  --command-id RunShellScript --scripts "tail -100 /var/log/bootstrap-mongo.log"
+
+# console output, works even when the agent is not up
+az vm boot-diagnostics get-boot-log -g <rg> -n <vm>
+```
+
+Worth noticing what the first one implies: Run Command is arbitrary root
+execution requiring **only ARM permissions**. So the VM's Contributor grant is
+more than "it can create VMs" — anyone holding it can run commands as root on
+every VM in the resource group, with no key and no open port. A scanner looking
+at the NSG sees none of that, which is the point: network controls and identity
+controls are separate planes.
+
+### What is likely to break first
+
+The bootstrap installs `mongodb-org` 5.0 for `focal` from `repo.mongodb.org`.
+That release reached end of life in October 2024 — which is the point — but it
+also means the repository could be withdrawn. cloud-init retries and logs to
+`/var/log/bootstrap-mongo.log`, so a failure is diagnosable rather than
+mysterious, but it is the most likely first-apply failure.
+
 ## The SSH exposure toggle
 
 The exercise requires SSH exposed to the public internet. That is a live risk:
