@@ -76,3 +76,16 @@ variable "enable_container_insights" {
   type        = bool
   default     = false
 }
+
+variable "vnet_address_space" {
+  description = <<-EOT
+    VNet address space for this environment. Subnets are derived from it, so an
+    environment's addressing is one CIDR.
+
+    val and prd are non-overlapping deliberately: the VNets never peer, but two
+    environments with identical address space are confusing on a diagram and
+    close off peering for no gain.
+  EOT
+  type        = string
+  default     = "10.20.0.0/16"
+}

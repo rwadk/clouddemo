@@ -10,7 +10,7 @@ terraform/
 │   ├── val/            calls modules — 1 node, SSH restricted
 │   └── prd/            calls modules — 2 nodes, SSH exposed
 └── modules/
-    ├── network/        VNet, subnets, NSGs
+    ├── network/        VNet, subnets — addressing only
     ├── mongo-vm/       Ubuntu + MongoDB, backup timer, managed identity
     ├── aks/            cluster, private nodes, workload identity
     └── app-platform/   ingress-nginx, External Secrets, external-dns
@@ -293,6 +293,60 @@ exactly the case the cap covers.
   resource group is enough to pull an *admin* kubeconfig, which reads every
   secret in the cluster. That wants `Azure Kubernetes Service Cluster User Role`
   plus in-cluster RBAC, and `local_account_disabled = true` on the cluster.
+
+## Network
+
+One VNet per environment, two subnets, derived from a single CIDR:
+
+| | val | prd |
+|---|---|---|
+| VNet | `10.10.0.0/16` | `10.20.0.0/16` |
+| `snet-public` — Mongo VM | `10.10.1.0/24` | `10.20.1.0/24` |
+| `snet-aks` — node pool | `10.10.2.0/24` | `10.20.2.0/24` |
+
+Non-overlapping deliberately. The VNets never peer, but keeping the option open
+costs nothing and two environments with identical address space are confusing on
+a diagram.
+
+`/24` is ample because the cluster uses **Azure CNI Overlay** — pods draw from an
+overlay range, so the subnet only addresses nodes. Classic Azure CNI would size
+this by pod count instead.
+
+### The module owns addressing, not security
+
+The NSG is **not** here. Its two rules are about the Mongo VM:
+
+| Rule | Source | Port |
+|---|---|---|
+| SSH | `0.0.0.0/0`, or `ssh_admin_cidr` when the toggle is off | 22 |
+| MongoDB | **`snet-aks` CIDR only** | 27017 |
+
+So `modules/mongo-vm` owns them, and this module exports `aks_subnet_cidr` for
+the second. Splitting a VM's security posture across two modules would be worse
+than the tidiness gained.
+
+That rule pair is also what resolves an apparent contradiction in the brief —
+"SSH exposed to the internet" and "database reachable only from Kubernetes" are
+both satisfied, because they are different ports with different sources on the
+same NIC.
+
+There is deliberately no NSG on the AKS subnet either. AKS manages its own rules
+in the `MC_*` node resource group, and a second NSG on the same subnet is a good
+way to produce traffic allowed by one and denied by the other.
+
+### What AKS gives you without this
+
+Worth being precise, since "private" means three things here:
+
+| | Source |
+|---|---|
+| Nodes have no public IPs | **AKS default** |
+| A VNet exists at all | AKS will create one in `MC_*` if you do not |
+| API server is private | **not** default — deliberately left public, see below |
+
+The reason to own the VNet is the Mongo VM: if AKS builds its own network, the
+VM lands in a different VNet and "reachable only from Kubernetes" needs peering
+and a CIDR from a resource group Azure manages rather than you.
 
 ## DNS
 

@@ -59,16 +59,21 @@ resource "azurerm_log_analytics_workspace" "env" {
 }
 
 ## ---------------------------------------------------------------------------
-## TODO — modules, in dependency order. See ../../README.md.
+## Network
 ## ---------------------------------------------------------------------------
-#
-# module "network" {
-#   source              = "../../modules/network"
-#   name_prefix         = local.name_prefix
-#   resource_group_name = data.azurerm_resource_group.env.name
-#   location            = data.azurerm_resource_group.env.location
-#   tags                = local.tags
-# }
+
+module "network" {
+  source              = "../../modules/network"
+  name_prefix         = local.name_prefix
+  resource_group_name = data.azurerm_resource_group.env.name
+  location            = data.azurerm_resource_group.env.location
+  address_space       = var.vnet_address_space
+  tags                = local.tags
+}
+
+## ---------------------------------------------------------------------------
+## TODO — remaining modules, in dependency order. See ../../README.md.
+## ---------------------------------------------------------------------------
 #
 # module "mongo_vm" {
 #   source                    = "../../modules/mongo-vm"
