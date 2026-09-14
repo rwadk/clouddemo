@@ -1,0 +1,115 @@
+#cloud-config
+package_update: true
+
+write_files:
+  - path: /opt/bootstrap-mongo.sh
+    permissions: '0750'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      # Brings up MongoDB with authentication, and puts its connection string in
+      # Key Vault. Terraform deliberately does not manage that secret: it would
+      # be refreshed on every plan, and reading a secret's value needs data-plane
+      # access the read-only plan identities do not have.
+      #
+      # Idempotent by design. The vault is persistent and this VM is ephemeral,
+      # so on a rebuild the secret already exists — reuse it, and the app's
+      # synced credential keeps working across a teardown.
+      set -euo pipefail
+      exec > >(tee -a /var/log/bootstrap-mongo.log) 2>&1
+      echo "=== bootstrap starting $(date -Is) ==="
+
+      DB="${mongodb_database}"
+      VAULT="${key_vault_name}"
+      SECRET="${secret_name}"
+      CLIENT_ID="${identity_client_id}"
+      MONGO_VER="${mongodb_version}"
+      APP_USER="appuser"
+
+      retry() {
+        local n=0
+        until "$@"; do
+          n=$((n+1))
+          [ $n -ge 30 ] && { echo "FAILED after $n attempts: $*"; return 1; }
+          echo "retry $n: $*"
+          sleep 10
+        done
+      }
+
+      ## --- Azure CLI ------------------------------------------------------
+      export DEBIAN_FRONTEND=noninteractive
+      retry apt-get update
+      retry apt-get install -y curl gnupg jq openssl
+      retry bash -c 'curl -sL https://aka.ms/InstallAzureCLIDeb | bash'
+
+      # RBAC is eventually consistent, and this VM boots the moment Terraform
+      # creates it. Retrying beats having the pipeline guess at a sleep.
+      retry az login --identity --username "$CLIENT_ID"
+
+      ## --- MongoDB, deliberately end-of-life ------------------------------
+      curl -fsSL "https://www.mongodb.org/static/pgp/server-$MONGO_VER.asc" \
+        | gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
+      echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/$MONGO_VER multiverse" \
+        > /etc/apt/sources.list.d/mongodb-org.list
+      retry apt-get update
+      retry apt-get install -y mongodb-org
+
+      systemctl enable mongod
+      systemctl start mongod
+      retry bash -c 'mongosh --quiet --eval "db.adminCommand({ping:1})" >/dev/null'
+
+      ## --- Credential: reuse if the vault already has one -----------------
+      PRIVATE_IP=$(hostname -I | awk '{print $1}')
+      EXISTING=$(az keyvault secret show --vault-name "$VAULT" --name "$SECRET" \
+                   --query value -o tsv 2>/dev/null || true)
+
+      if [ -n "$EXISTING" ]; then
+        echo "reusing the existing credential from $VAULT"
+        PASSWORD=$(echo "$EXISTING" | sed -E 's#^mongodb://[^:]+:([^@]+)@.*#\1#')
+        # The IP changes when the VM is rebuilt, so rewrite the string even
+        # though the password is unchanged.
+        URI="mongodb://$APP_USER:$PASSWORD@$PRIVATE_IP:27017/$DB?authSource=admin"
+        az keyvault secret set --vault-name "$VAULT" --name "$SECRET" --value "$URI" >/dev/null
+      else
+        echo "no credential in $VAULT — generating one"
+        PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 28)
+        URI="mongodb://$APP_USER:$PASSWORD@$PRIVATE_IP:27017/$DB?authSource=admin"
+        retry az keyvault secret set --vault-name "$VAULT" --name "$SECRET" --value "$URI"
+      fi
+
+      ## --- User, then enable auth -----------------------------------------
+      # The user has to exist before authorization is turned on, otherwise
+      # nothing can authenticate to create it.
+      mongosh --quiet admin --eval "
+        db.getSiblingDB('admin').createUser({
+          user: '$APP_USER',
+          pwd:  '$PASSWORD',
+          roles: [{ role: 'readWrite', db: '$DB' }, { role: 'clusterMonitor', db: 'admin' }]
+        })
+      " || echo "user already exists, continuing"
+
+      # bindIp 0.0.0.0 so the cluster can reach it. What restricts access is the
+      # NSG rule allowing 27017 from the AKS subnet and nowhere else — the brief
+      # asks for database access limited to Kubernetes, and that is where it is
+      # enforced, not here.
+      cat > /etc/mongod.conf <<EOF
+      storage:
+        dbPath: /var/lib/mongodb
+      systemLog:
+        destination: file
+        logAppend: true
+        path: /var/log/mongodb/mongod.log
+      net:
+        port: 27017
+        bindIp: 0.0.0.0
+      security:
+        authorization: enabled
+      EOF
+
+      systemctl restart mongod
+      retry bash -c "mongosh --quiet -u '$APP_USER' -p '$PASSWORD' --authenticationDatabase admin --eval 'db.adminCommand({ping:1})' >/dev/null"
+
+      echo "=== bootstrap complete $(date -Is) ==="
+
+runcmd:
+  - /opt/bootstrap-mongo.sh

@@ -72,23 +72,36 @@ module "network" {
 }
 
 ## ---------------------------------------------------------------------------
+## Mongo VM
+## ---------------------------------------------------------------------------
+
+module "mongo_vm" {
+  source              = "../../modules/mongo-vm"
+  name_prefix         = local.name_prefix
+  resource_group_name = data.azurerm_resource_group.env.name
+  location            = data.azurerm_resource_group.env.location
+
+  subnet_id       = module.network.public_subnet_id
+  aks_subnet_cidr = module.network.aks_subnet_cidr
+
+  ssh_expose_publicly = var.ssh_expose_publicly
+  ssh_admin_cidr      = var.ssh_admin_cidr
+  ssh_public_key      = var.ssh_public_key
+
+  # This environment's resource group, not the subscription. The privilege
+  # escalation is the same to demonstrate; the blast radius is not.
+  overpermissive_role_scope = data.azurerm_resource_group.env.id
+
+  # The vault is in the persistent tier, so this is a cross-stack reference.
+  key_vault_id   = data.terraform_remote_state.persistent.outputs.key_vault_id
+  key_vault_name = data.terraform_remote_state.persistent.outputs.key_vault_name
+
+  tags = local.tags
+}
+
+## ---------------------------------------------------------------------------
 ## TODO — remaining modules, in dependency order. See ../../README.md.
 ## ---------------------------------------------------------------------------
-#
-# module "mongo_vm" {
-#   source                    = "../../modules/mongo-vm"
-#   name_prefix               = local.name_prefix
-#   resource_group_name       = data.azurerm_resource_group.env.name
-#   location                  = data.azurerm_resource_group.env.location
-#   subnet_id                 = module.network.public_subnet_id
-#   aks_subnet_cidr           = module.network.aks_subnet_cidr
-#   ssh_expose_publicly       = var.ssh_expose_publicly
-#   ssh_admin_cidr            = var.ssh_admin_cidr
-#   ssh_public_key            = var.ssh_public_key
-#   backup_storage_account_id = data.terraform_remote_state.persistent.outputs.demo_storage_account_id
-#   overpermissive_role_scope = data.azurerm_resource_group.env.id
-#   tags                      = local.tags
-# }
 #
 # module "aks" {
 #   source              = "../../modules/aks"

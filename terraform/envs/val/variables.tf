@@ -89,3 +89,14 @@ variable "vnet_address_space" {
   type        = string
   default     = "10.10.0.0/16"
 }
+
+variable "ssh_public_key" {
+  description = <<-EOT
+    Public key for the Mongo VM's admin user, in authorized_keys format.
+
+    Supplied by CI from the SSH_PUBLIC_KEY repository variable. Use a keypair
+    dedicated to this exercise: the VM is an end-of-life image with SSH
+    reachable from the internet and an identity that can create VMs.
+  EOT
+  type        = string
+}
