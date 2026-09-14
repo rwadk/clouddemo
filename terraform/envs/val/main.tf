@@ -48,6 +48,13 @@ resource "azurerm_log_analytics_workspace" "env" {
   sku               = "PerGB2018"
   retention_in_days = 30
 
+  # A hard stop, not an alert. Ingestion is 19.19 DKK/GB in Sweden Central, so
+  # one GB is 77% of the monthly budget. The budget alert only reports after the
+  # money is gone, and tearing down after each session protects the steady state
+  # but not the session you forget to end — a forgotten weekend at Container
+  # Insights defaults is roughly 5 GB, about 100 DKK.
+  daily_quota_gb = 0.5
+
   tags = local.tags
 }
 
@@ -84,6 +91,7 @@ resource "azurerm_log_analytics_workspace" "env" {
 #   resource_group_name = data.azurerm_resource_group.env.name
 #   location            = data.azurerm_resource_group.env.location
 #   node_count          = var.node_count
+#   enable_container_insights = var.enable_container_insights
 #   subnet_id           = module.network.aks_subnet_id
 #   log_analytics_id    = azurerm_log_analytics_workspace.env.id
 #   tags                = local.tags
