@@ -21,3 +21,18 @@ variable "dns_zone_name" {
   type        = string
   default     = "clouddemo.rwa.dk"
 }
+
+variable "operator_object_id" {
+  description = <<-EOT
+    Entra object ID of the human operator, granted Key Vault Administrator so
+    the TLS certificate can be imported by hand.
+
+    Needed as a variable rather than read from the running principal, because
+    the persistent stack is applied by CI — data.azurerm_client_config would
+    resolve to the deploy identity, not to a person.
+
+      az ad signed-in-user show --query id -o tsv
+  EOT
+  type        = string
+  default     = "c720b060-224d-40a3-9012-50a5c35f7a2d"
+}

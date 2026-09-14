@@ -17,3 +17,18 @@ output "dns_name_servers" {
   description = "Paste these at Simply.com to delegate the zone. Stable unless the zone is destroyed."
   value       = azurerm_dns_zone.env.name_servers
 }
+
+output "key_vault_id" {
+  description = "Key Vault resource ID — consumed by the ephemeral stack for RBAC grants."
+  value       = azurerm_key_vault.env.id
+}
+
+output "key_vault_uri" {
+  description = "Vault URI. The Mongo VM writes its generated password here at first boot."
+  value       = azurerm_key_vault.env.vault_uri
+}
+
+output "key_vault_name" {
+  description = "Vault name."
+  value       = azurerm_key_vault.env.name
+}
