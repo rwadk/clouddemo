@@ -8,6 +8,8 @@
 ## Today that is the DNS zone. The container registry and the deliberately
 ## public demo storage account belong here too — see ../../README.md.
 
+data "azurerm_client_config" "current" {}
+
 data "azurerm_resource_group" "persistent" {
   name = "rg-${var.project}-${local.env}-persistent"
 }

@@ -348,6 +348,71 @@ The reason to own the VNet is the Mongo VM: if AKS builds its own network, the
 VM lands in a different VNet and "reachable only from Kubernetes" needs peering
 and a CIDR from a resource group Azure manages rather than you.
 
+## Key Vault
+
+One vault per environment, in the **persistent** tier, RBAC-authorised.
+
+| Holds | Written by | When |
+|---|---|---|
+| TLS certificate for the prd hostname | the operator, by hand | once per ~90 days |
+| MongoDB connection string | the Mongo VM at first boot | on first build, reused after |
+
+### Why persistent
+
+The tier test is *what does losing it cost?*, and the certificate costs a manual
+step. An ephemeral vault would mean re-importing it after every teardown.
+
+That is also why the certificate is pre-issued rather than managed by
+cert-manager. Let's Encrypt allows **5 duplicate certificates per week** for an
+identical hostname set, and cert-manager stores the certificate in a Kubernetes
+Secret — so destroying the cluster means re-requesting one on the next deploy.
+Tearing down after each session would spend that allowance quickly.
+
+The sharper limit is **5 failed validations per hostname per hour**, which bites
+while debugging DNS-01 rather than when things work. A pre-issued certificate in
+a persistent vault has no runtime dependency at all: rebuilds cost zero
+issuances and nothing can fail while you are watching.
+
+### Terraform does not manage the secret
+
+The vault and its RBAC are Terraform's; the MongoDB credential is not.
+
+If Terraform managed `azurerm_key_vault_secret`, every plan would refresh it —
+and reading a secret's value is a data-plane operation `Reader` does not grant,
+so **every PR plan run by the `<env>-readonly` identity would fail**. Fixing that
+by granting the plan identities `Key Vault Secrets User` would hand a read-only
+identity the ability to read live credentials, which is a worse trade than the
+tidiness it buys.
+
+So the VM generates its own password at first boot and writes the whole
+connection string — it is the only thing that knows its own private IP. On a
+rebuild it finds the existing secret and reuses it, so the credential survives
+teardown and the app's synced Secret keeps working.
+
+A side benefit: the credential never enters Terraform state, which stores values
+in plaintext.
+
+### Purge protection is off
+
+Once enabled it cannot be disabled, and the vault name is then unusable for 90
+days after a delete — which turns a rebuild into a renaming exercise. Soft
+delete at the 7-day minimum keeps an accidental delete recoverable without that
+trap.
+
+### Access
+
+| Principal | Role | Why |
+|---|---|---|
+| deploy identity | Key Vault Secrets Officer | grants the VM and workload identities their access |
+| operator | Key Vault Administrator | subscription Owner grants **nothing** on the Key Vault data plane — the same gap bootstrap hit with blob storage |
+| Mongo VM identity | Secrets Officer | writes the connection string *(with `mongo-vm`)* |
+| ESO workload identity | Secrets User | reads it into a K8s Secret *(with `app-platform`)* |
+
+The last two are role assignments made by the **ephemeral** stack against a
+vault in the persistent one. That works because the deploy identity holds RBAC
+Administrator on both resource groups, and `envs/*` already reads persistent's
+remote state — which is what `key_vault_id` is exported for.
+
 ## DNS
 
 Two sibling zones, each delegated independently from `rwa.dk` at Simply.com, so
