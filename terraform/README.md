@@ -403,10 +403,22 @@ trap.
 
 | Principal | Role | Why |
 |---|---|---|
-| deploy identity | Key Vault Secrets Officer | grants the VM and workload identities their access |
 | operator | Key Vault Administrator | subscription Owner grants **nothing** on the Key Vault data plane — the same gap bootstrap hit with blob storage |
-| Mongo VM identity | Secrets Officer | writes the connection string *(with `mongo-vm`)* |
+| Mongo VM identity | Secrets Officer | writes the connection string |
 | ESO workload identity | Secrets User | reads it into a K8s Secret *(with `app-platform`)* |
+
+The deploy identity gets **no** data-plane grant. Terraform never reads or
+writes a secret here, and creating role assignments *on* the vault is an ARM
+operation already covered by the RBAC Administrator bootstrap granted on the
+resource group.
+
+An earlier version granted it Secrets Officer through
+`data.azurerm_client_config.current.object_id`, which resolves to whoever is
+running — and plans run as `<env>-readonly` while applies run as the deploy
+identity. The assignment churned on every run: each plan showed a phantom
+replacement, each apply flipped it back. Worth remembering wherever
+`client_config` is used for a role assignment in a repo where two different
+identities plan and apply.
 
 The last two are role assignments made by the **ephemeral** stack against a
 vault in the persistent one. That works because the deploy identity holds RBAC
