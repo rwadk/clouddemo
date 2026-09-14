@@ -221,9 +221,22 @@ jobs:
   deploy:
     name: deploy
     needs: [changes, build, ci-ok]
-    if: |
+    # `!cancelled()` is load-bearing, not decoration.
+    #
+    # GitHub propagates "skipped" *transitively* through the needs graph. `plan`
+    # is skipped on a push (it is PR-only), and `ci-ok` depends on it. Even
+    # though ci-ok runs via always() and reports success, every downstream job
+    # inherits that skip unless its own condition contains a status function.
+    #
+    # Without this, deploy silently skipped on every push to main and CD never
+    # ran at all — a green CI run that deployed nothing.
+    #
+    # Using a status function also drops the implicit success() check, so the
+    # gate on ci-ok has to be stated explicitly. That is enough on its own:
+    # ci-ok already fails if changes, plan or build failed.
+    if: >
+      !cancelled() && needs.ci-ok.result == 'success' &&
       github.event_name == 'push' &&
-      needs.ci-ok.result == 'success' &&
       (needs.changes.outputs.terraform == 'true' || needs.changes.outputs.app == 'true')
     uses: ./.github/workflows/cd.yml
     with:
